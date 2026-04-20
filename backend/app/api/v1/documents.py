@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
 from app.core.deps import get_current_user
+from app.integrations.yahoo_finance import get_price
 from app.models.deal import Deal
 from app.models.document import Document
 from app.models.supplier import Supplier
@@ -89,6 +90,31 @@ async def generate_document(
                 "type": supplier.type,
             },
         )
+
+    # For counter-offer emails, auto-inject the live futures reference so the LLM has a
+    # transparent anchor to justify the counter against. Best-effort — if the feed is down
+    # we omit the block rather than fail the document generation.
+    if payload.type == "counter_offer_email" and "market_reference" not in inputs:
+        commodity_hint = (
+            (inputs.get("supplier") or {}).get("commodity")
+            or (inputs.get("deal") or {}).get("commodity")
+        )
+        if commodity_hint:
+            try:
+                quote = await get_price(commodity_hint)
+            except Exception:
+                quote = None
+            if quote is not None:
+                inputs["market_reference"] = {
+                    "commodity": quote.commodity,
+                    "ticker": quote.ticker,
+                    "exchange": quote.exchange,
+                    "price_mt": quote.price_mt,
+                    "raw_price": quote.raw_price,
+                    "quoted_unit": quote.quoted_unit,
+                    "source": quote.source,
+                    "timestamp": quote.timestamp,
+                }
 
     service = DocumentGenerationService()
     title, content = await service.generate(payload.type, inputs)

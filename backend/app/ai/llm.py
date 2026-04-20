@@ -45,7 +45,20 @@ class MockLLM(LLMClient):
             "supplier" in prompt and "json" in prompt and "array" in prompt
         ):
             return json.dumps(_mock_suppliers(user))
-        # Document templates.
+        # Email templates must be matched BEFORE generic doc-type keywords because the
+        # email system prompts themselves reference other doc types (e.g. "execute an
+        # NCNDA on interest", "draft SPA within 48 hours") which would otherwise hijack
+        # the routing and return the wrong mock.
+        if "counter-offer" in prompt or "counter_offer" in prompt or "counter offer" in prompt:
+            return _mock_counter_offer(user)
+        if (
+            "cold outreach email" in prompt
+            or "outreach email" in prompt
+            or "draft an email" in prompt
+            or "write an email" in prompt
+        ):
+            return _mock_outreach(user)
+        # Legal document templates.
         if "ncnda" in prompt or "non-circumvention" in prompt:
             return _mock_ncnda(user)
         if "sale and purchase" in prompt or "spa" in prompt:
@@ -54,8 +67,6 @@ class MockLLM(LLMClient):
             return _mock_loi(user)
         if "imfpa" in prompt or "fee protection" in prompt or "fpa" in prompt:
             return _mock_imfpa(user)
-        if "outreach" in prompt or "draft an email" in prompt or "write an email" in prompt:
-            return _mock_outreach(user)
         return f"[mock-llm] {user[:200]}..."
 
     async def json(self, system: str, user: str, max_tokens: int = 1024) -> dict[str, Any]:
@@ -216,6 +227,9 @@ def _mock_classification(user: str) -> dict:
 
 
 def _mock_outreach(user: str) -> str:
+    """Cold outreach. Deliberately contains NO offer price — rule #1 of negotiation
+    is 'don't anchor yourself against yourself'. We ask the supplier to quote first.
+    """
     ctx = _parse_inputs(user)
     sender = ctx.get("sender") or {}
     supplier = ctx.get("supplier") or {}
@@ -228,11 +242,22 @@ def _mock_outreach(user: str) -> str:
         or "the specified commodity"
     )
     supplier_name = supplier.get("name") or _extract(user, "company") or "your company"
+    supplier_country = supplier.get("country") or "your region"
+    volume_mt = deal.get("volume_mt")
+    incoterms = deal.get("incoterms") or "FOB / CFR"
+
     sender_name = sender.get("full_name") or "[Your Name]"
     sender_company = sender.get("company_name") or "[Your Company]"
     sender_title = sender.get("title") or "Trader"
     sender_email = sender.get("email") or ""
     sender_phone = sender.get("phone") or ""
+
+    volume_line = (
+        f"- Target volume: {int(volume_mt):,} MT/month, 12-month rolling contract"
+        if isinstance(volume_mt, (int, float)) and volume_mt > 0
+        else "- Target volume: monthly tonnage to be confirmed based on your capacity"
+    )
+    spec_guidance = _default_spec_for(commodity)
 
     signature_lines = [sender_name, f"{sender_title}, {sender_company}"]
     if sender_email:
@@ -240,18 +265,146 @@ def _mock_outreach(user: str) -> str:
     if sender_phone:
         signature_lines.append(sender_phone)
 
+    subject_vol = (
+        f" — {int(volume_mt):,} MT/month"
+        if isinstance(volume_mt, (int, float)) and volume_mt > 0
+        else ""
+    )
+
     return (
-        f"Subject: Potential Partnership — {commodity.title()} Sourcing\n\n"
+        f"Subject: {commodity.title()} sourcing enquiry{subject_vol}\n\n"
         f"Dear {supplier_name} team,\n\n"
-        f"My name is {sender_name} from {sender_company}. We work with verified end buyers "
-        f"of {commodity} and are exploring reliable supply partners. Based on public sources "
-        f"we understand you are an established supplier in this space.\n\n"
-        f"If relevant, we would appreciate a brief call to align on current availability, "
-        f"indicative pricing (FOB/CIF), and standard Incoterms. We sign NCNDA prior to "
-        f"any commercial disclosure.\n\n"
-        f"Looking forward to your response.\n\n"
+        f"I'm {sender_name} at {sender_company}. We structure physical {commodity} "
+        f"supply for end-buyers under bank-instrument-backed contracts.\n\n"
+        f"Your name came up as an established producer in {supplier_country}, and we "
+        f"would like to explore whether a supply line fits your current capacity.\n\n"
+        f"Requirements:\n"
+        f"{volume_line}\n"
+        f"{spec_guidance}\n"
+        f"- Incoterms: {incoterms} (destination port disclosed on NCNDA)\n"
+        f"- Payment: DLC at sight or SBLC, issued by top-50 bank\n"
+        f"- First shipment: earliest available window\n\n"
+        f"To progress, please share:\n"
+        f"- Your indicative FOB and CFR levels (USD/MT)\n"
+        f"- Minimum order quantity and lead time from LC confirmation\n"
+        f"- Accepted payment instruments and tenor\n\n"
+        f"We are ready to execute an NCNDA on interest, and end-buyer LOI / proof of "
+        f"funds is available on request. Happy to take a 20-minute call this week.\n\n"
         f"Best regards,\n" + "\n".join(signature_lines) + "\n"
     )
+
+
+def _mock_counter_offer(user: str) -> str:
+    """Counter-offer email. Price IS included here, anchored to the live futures
+    market reference (from the Yahoo Finance integration) when provided.
+    """
+    ctx = _parse_inputs(user)
+    sender = ctx.get("sender") or {}
+    supplier = ctx.get("supplier") or {}
+    deal = ctx.get("deal") or {}
+    mkt = ctx.get("market_reference") or {}
+    quote = ctx.get("supplier_quote") or {}
+
+    commodity = (
+        supplier.get("commodity")
+        or deal.get("commodity")
+        or _extract(user, "commodity")
+        or "the specified commodity"
+    )
+    supplier_name = supplier.get("name") or "your team"
+    volume_mt = deal.get("volume_mt")
+    incoterms = deal.get("incoterms") or "CFR"
+
+    supplier_price = _as_float(quote.get("price_mt") or quote.get("price"))
+    market_price = _as_float(mkt.get("price_mt") or mkt.get("price"))
+    ticker = mkt.get("ticker") or "ICE futures"
+    exchange = mkt.get("exchange") or "ICE"
+
+    # Counter at 3.5% below supplier quote, floored at market + a 5% basis.
+    if supplier_price:
+        counter = supplier_price * 0.965
+        if market_price:
+            counter = max(counter, market_price * 1.05)
+        counter_str = f"${counter:,.2f}/MT"
+        anchor_line = (
+            f"Referencing {exchange} {ticker} at ${market_price:,.2f}/MT with a working "
+            f"basis to cover freight and LC finance, "
+            if market_price
+            else ""
+        )
+        price_block = (
+            f"{anchor_line}our working level on this enquiry is {counter_str} {incoterms}, "
+            f"against your indication of ${supplier_price:,.2f}/MT."
+        )
+    else:
+        price_block = (
+            f"We would like to see a CFR level that reflects current {exchange} "
+            f"{ticker} fundamentals plus a reasonable freight-and-finance basis. Please "
+            f"share your basis rationale and we will revert with a firm working level."
+        )
+
+    volume_line = (
+        f"Confirmed volume: {int(volume_mt):,} MT/month over a 12-month rolling "
+        f"contract, with upside on performance."
+        if isinstance(volume_mt, (int, float)) and volume_mt > 0
+        else "Volume as previously discussed; we can scale on performance."
+    )
+
+    sender_name = sender.get("full_name") or "[Your Name]"
+    sender_company = sender.get("company_name") or "[Your Company]"
+    sender_title = sender.get("title") or "Trader"
+    sender_email = sender.get("email") or ""
+    sender_phone = sender.get("phone") or ""
+    signature_lines = [sender_name, f"{sender_title}, {sender_company}"]
+    if sender_email:
+        signature_lines.append(sender_email)
+    if sender_phone:
+        signature_lines.append(sender_phone)
+
+    return (
+        f"Subject: Re: {commodity.title()} — working level and path to LC\n\n"
+        f"Dear {supplier_name},\n\n"
+        f"Thank you for the indication — the specs align with what our end-buyer is "
+        f"looking for. To move to LC stage, we need the price to reflect current market.\n\n"
+        f"{price_block}\n\n"
+        f"{volume_line}\n\n"
+        f"To make the number workable on your side, we can offer either (a) a "
+        f"non-refundable 2% performance deposit on LC issuance, or (b) DLC at sight on "
+        f"a 30-day tenor instead of 60. Either improves your cost of capital and gives "
+        f"you room to tighten your offer.\n\n"
+        f"If the counter works, we will issue draft SPA within 48 hours. If you prefer "
+        f"to hold closer to your original level, propose a volume upsize or tighter "
+        f"spec and we will re-run the math.\n\n"
+        f"Best regards,\n" + "\n".join(signature_lines) + "\n"
+    )
+
+
+def _as_float(x: object) -> float | None:
+    try:
+        if x is None:
+            return None
+        return float(x)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _default_spec_for(commodity: str) -> str:
+    c = (commodity or "").lower()
+    if "sugar" in c:
+        return "- Spec: ICUMSA 45 refined or VHP raw (please confirm your grades)"
+    if "wheat" in c:
+        return "- Spec: milling grade, protein ≥ 11.5%, moisture ≤ 13.5%"
+    if "corn" in c or "maize" in c:
+        return "- Spec: feed grade #2 yellow, moisture ≤ 14%"
+    if "coffee" in c:
+        return "- Spec: Arabica or Robusta, grade to be confirmed"
+    if "cocoa" in c:
+        return "- Spec: main-crop beans, ≤ 8% moisture, fermented"
+    if "cotton" in c:
+        return "- Spec: Middling 1-1/8\" or equivalent, micronaire 3.8–4.9"
+    if "soy" in c:
+        return "- Spec: non-GMO if available, protein ≥ 34%, moisture ≤ 13%"
+    return "- Spec: please share your standard export grades and certifications"
 
 
 def _parse_inputs(user: str) -> dict:
