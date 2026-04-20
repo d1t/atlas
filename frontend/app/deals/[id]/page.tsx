@@ -3,6 +3,7 @@
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "../../../components/AppShell";
+import { PriceDisplay } from "../../../components/PriceDisplay";
 import {
   Activity,
   api,
@@ -218,6 +219,17 @@ export default function DealWorkspacePage() {
             <p className="mt-1 text-xs text-gray-300">
               {deal.metrics?.rationale || ""}
             </p>
+          </div>
+
+          <div className="mt-4">
+            <div className="mb-2 text-xs uppercase text-gray-500">
+              Market reference
+            </div>
+            <PriceDisplay
+              commodity={deal.commodity}
+              buyPrice={deal.buy_price}
+              sellPrice={deal.sell_price}
+            />
           </div>
 
           {deal.metrics?.scenarios && (

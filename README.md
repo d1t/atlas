@@ -16,14 +16,28 @@ Initial MVP covering all five core modules end-to-end:
 | 3 | Deal Structuring | Pricing / margin / scenario engine |
 | 4 | Document Generation | NCNDA, SPA, LOI, FPA, IMFPA, outreach (MD + DOCX) |
 | 5 | Deal Pipeline / CRM | Stage state machine, activity log, tasks |
+| 6 | Market Reference Prices | Yahoo Finance live futures (sugar, wheat, corn, coffee, cocoa, cotton, soy, oil, gold) with 5-min cache |
 
 Deliberately deferred (clearly marked as `TODO` in code):
 
-- Live integrations with Commodities API / Clearbit / OpenCorporates / MarineTraffic
+- Live integrations with Clearbit / OpenCorporates / MarineTraffic
 - Production-grade Playwright scraping (anti-bot, proxies)
 - Neo4j relationship graph
 - GraphQL
 - Advanced RBAC
+
+## Market price feed (Yahoo Finance)
+
+The `/api/v1/prices/{commodity}` endpoint returns the latest futures quote for a
+commodity, converted to `USD/MT` where the exchange unit differs (cents/lb for
+soft commodities, cents/bushel for grains). No API key required.
+
+Ticker map: sugar→`SB=F` (ICE), wheat→`ZW=F`, corn→`ZC=F`, soybeans→`ZS=F`
+(CBOT), coffee→`KC=F`, cocoa→`CC=F`, cotton→`CT=F` (ICE), crude_oil→`CL=F`
+(NYMEX), gold→`GC=F` (COMEX). Prices are cached in-memory for 5 minutes per
+ticker. The dashboard and each deal's pricing card show a live quote with a
+`vs buy` / `vs sell` deviation badge so traders can sanity-check quoted
+numbers against the market.
 
 ## Architecture
 

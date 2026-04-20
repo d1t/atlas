@@ -291,6 +291,37 @@ export const api = {
   // pipeline
   pipelineBoard: () => request<PipelineBoard>("/api/v1/pipeline/board"),
   pipelineStats: () => request<PipelineStats>("/api/v1/pipeline/stats"),
+
+  // prices (Yahoo Finance)
+  listCommodities: () => request<{ commodities: CommodityInfo[] }>("/api/v1/prices"),
+  getPrice: (commodity: string, refresh = false) =>
+    request<CommodityQuote>(
+      `/api/v1/prices/${encodeURIComponent(commodity)}${refresh ? "?refresh=true" : ""}`,
+    ),
+};
+
+export type CommodityInfo = {
+  slug: string;
+  display: string;
+  ticker: string;
+  exchange: string;
+  quoted_unit: string;
+  supports_mt: boolean;
+};
+
+export type CommodityQuote = {
+  commodity: string;
+  display: string;
+  ticker: string;
+  exchange: string;
+  quoted_unit: string;
+  raw_price: number;
+  price_mt: number | null;
+  currency: string;
+  timestamp: number;
+  previous_close: number | null;
+  change_pct: number | null;
+  source: string;
 };
 
 export const STAGE_LABELS: Record<string, string> = {
