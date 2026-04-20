@@ -33,20 +33,25 @@ class MockLLM(LLMClient):
 
     async def complete(self, system: str, user: str, max_tokens: int = 1024) -> str:
         prompt = (system + "\n" + user).lower()
-        if "ncnda" in prompt or "non-circumvention" in prompt:
-            return _mock_ncnda(user)
-        if "spa" in prompt or "sale and purchase" in prompt:
-            return _mock_spa(user)
-        if "loi" in prompt or "letter of intent" in prompt:
-            return _mock_loi(user)
-        if "imfpa" in prompt or "fpa" in prompt or "fee protection" in prompt:
-            return _mock_imfpa(user)
-        if "outreach" in prompt or "email" in prompt:
-            return _mock_outreach(user)
+        # Structured JSON responses first — these are keyed by concrete tasks, not
+        # generic words like "email" that appear in field lists.
         if "classify" in prompt or "classification" in prompt:
             return json.dumps(_mock_classification(user))
-        if "supplier" in prompt and "list" in prompt:
+        if "supplier discovery" in prompt or (
+            "supplier" in prompt and "json" in prompt and "array" in prompt
+        ):
             return json.dumps(_mock_suppliers(user))
+        # Document templates.
+        if "ncnda" in prompt or "non-circumvention" in prompt:
+            return _mock_ncnda(user)
+        if "sale and purchase" in prompt or "spa" in prompt:
+            return _mock_spa(user)
+        if "letter of intent" in prompt or "loi" in prompt:
+            return _mock_loi(user)
+        if "imfpa" in prompt or "fee protection" in prompt or "fpa" in prompt:
+            return _mock_imfpa(user)
+        if "outreach" in prompt or "draft an email" in prompt or "write an email" in prompt:
+            return _mock_outreach(user)
         return f"[mock-llm] {user[:200]}..."
 
     async def json(self, system: str, user: str, max_tokens: int = 1024) -> dict[str, Any]:
@@ -291,5 +296,5 @@ def _mock_imfpa(user: str) -> str:
 
 
 def _extract(text: str, key: str) -> str | None:
-    m = re.search(rf"{key}\s*[:=]\s*([\w\s\-]+)", text, re.IGNORECASE)
+    m = re.search(rf"{key}\s*[:=]\s*([^\n,;]+)", text, re.IGNORECASE)
     return m.group(1).strip() if m else None
