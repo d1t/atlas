@@ -235,9 +235,14 @@ _DIRECTORY_DOMAINS = {
     "nytimes.com",
 }
 
-_TITLE_SUFFIXES = re.compile(
-    r"\s*[-|–—]\s*(home|about|contact|suppliers?|exporters?|company|manufacturer|mill|"
-    r"products?|homepage|official site|linkedin|facebook).*$",
+_GENERIC_TITLE_PARTS = re.compile(
+    r"^(contact(\s+us)?|home|homepage|about(\s+us)?|welcome|index|official\s+site|"
+    r"products?|services?)$",
+    re.IGNORECASE,
+)
+
+_TRAILING_SUFFIX = re.compile(
+    r"\s*[-|–—]\s*(home|about|contact|homepage|official site|linkedin|facebook).*$",
     re.IGNORECASE,
 )
 
@@ -247,8 +252,20 @@ def _is_directory_domain(domain: str) -> bool:
 
 
 def _clean_title(title: str) -> str:
-    t = _TITLE_SUFFIXES.sub("", title).strip()
-    return t[:120]
+    """Turn a raw SERP title into a usable company name.
+
+    Strips generic leading segments like "Contact Us |" / "Home -" and trailing
+    "- Official Site" style suffixes. If the whole title is generic, returns
+    empty so the caller can fall back to the domain name.
+    """
+    t = _TRAILING_SUFFIX.sub("", title).strip()
+    # Split on common separators and drop leading generic parts like "Contact Us".
+    parts = [p.strip() for p in re.split(r"\s*[|–—]\s*|\s+-\s+", t) if p.strip()]
+    while parts and _GENERIC_TITLE_PARTS.match(parts[0]):
+        parts.pop(0)
+    if not parts:
+        return ""
+    return parts[0][:120]
 
 
 def _name_from_domain(domain: str) -> str:
