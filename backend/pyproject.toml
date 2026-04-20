@@ -1,0 +1,58 @@
+[project]
+name = "atlas-backend"
+version = "0.1.0"
+description = "Atlas Trade OS - AI-Native Commodity Trading Backend"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "sqlalchemy[asyncio]>=2.0.30",
+    "alembic>=1.13",
+    "asyncpg>=0.29",
+    "aiosqlite>=0.20",
+    "bcrypt>=4.0,<5.0",
+    "pyjwt>=2.9",
+    "python-multipart>=0.0.9",
+    "httpx>=0.27",
+    "redis>=5.0",
+    "python-docx>=1.1",
+    "markdown>=3.6",
+    "email-validator>=2.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+    "httpx>=0.27",
+]
+ai = [
+    "openai>=1.40",
+    "anthropic>=0.34",
+]
+scraping = [
+    "playwright>=1.46",
+    "beautifulsoup4>=4.12",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "W"]
+ignore = ["E501", "B008"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
