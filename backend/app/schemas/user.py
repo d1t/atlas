@@ -5,11 +5,19 @@ class UserCreate(BaseModel):
     email: EmailStr
     password: str
     full_name: str | None = None
+    company_name: str | None = None
 
 
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+
+
+class UserUpdate(BaseModel):
+    full_name: str | None = None
+    company_name: str | None = None
+    title: str | None = None
+    phone: str | None = None
 
 
 class UserOut(BaseModel):
@@ -18,6 +26,9 @@ class UserOut(BaseModel):
     id: int
     email: EmailStr
     full_name: str | None = None
+    company_name: str | None = None
+    title: str | None = None
+    phone: str | None = None
     role: str
     is_active: bool
 

@@ -9,7 +9,7 @@ import {
   useEffect,
   useState,
 } from "react";
-import { api, clearSession, getCurrentUser, setSession, User } from "./api";
+import { api, clearSession, getCurrentUser, setSession, storeUser, User } from "./api";
 
 type Ctx = {
   user: User | null;
@@ -17,6 +17,7 @@ type Ctx = {
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string, fullName?: string) => Promise<void>;
   logout: () => void;
+  refreshUser: (u: User) => void;
 };
 
 const AuthCtx = createContext<Ctx | null>(null);
@@ -63,8 +64,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     router.push("/login");
   }, [router]);
 
+  const refreshUser = useCallback((u: User) => {
+    storeUser(u);
+    setUser(u);
+  }, []);
+
   return (
-    <AuthCtx.Provider value={{ user, loading, login, register, logout }}>
+    <AuthCtx.Provider
+      value={{ user, loading, login, register, logout, refreshUser }}
+    >
       {children}
     </AuthCtx.Provider>
   );

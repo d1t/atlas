@@ -38,6 +38,20 @@ async def generate_document(
     user: User = Depends(get_current_user),
 ) -> DocumentOut:
     inputs: dict = dict(payload.inputs or {})
+
+    # Current user — signer / sender. Personalises outreach emails and doc signatures.
+    inputs.setdefault(
+        "sender",
+        {
+            "full_name": user.full_name or user.email.split("@")[0],
+            "company_name": user.company_name or "(your company — set it in Profile)",
+            "title": user.title or "Trader",
+            "email": user.email,
+            "phone": user.phone,
+        },
+    )
+
+    supplier_id = payload.supplier_id
     if payload.deal_id:
         deal = await db.get(Deal, payload.deal_id)
         if not deal:
@@ -45,6 +59,7 @@ async def generate_document(
         inputs.setdefault(
             "deal",
             {
+                "title": deal.title,
                 "commodity": deal.commodity,
                 "volume_mt": deal.volume_mt,
                 "buy_price": deal.buy_price,
@@ -52,10 +67,15 @@ async def generate_document(
                 "freight_estimate": deal.freight_estimate,
                 "incoterms": deal.incoterms,
                 "currency": deal.currency,
+                "structure": deal.structure,
             },
         )
-    if payload.supplier_id:
-        supplier = await db.get(Supplier, payload.supplier_id)
+        # If the deal has a linked supplier, auto-use it when supplier_id not passed.
+        if supplier_id is None and deal.supplier_id is not None:
+            supplier_id = deal.supplier_id
+
+    if supplier_id:
+        supplier = await db.get(Supplier, supplier_id)
         if not supplier:
             raise HTTPException(status_code=404, detail="Supplier not found")
         inputs.setdefault(
@@ -63,8 +83,10 @@ async def generate_document(
             {
                 "name": supplier.name,
                 "country": supplier.country,
+                "commodity": supplier.commodity,
                 "email": supplier.email,
                 "website": supplier.website,
+                "type": supplier.type,
             },
         )
 

@@ -10,8 +10,18 @@ export type User = {
   id: number;
   email: string;
   full_name: string | null;
+  company_name: string | null;
+  title: string | null;
+  phone: string | null;
   role: string;
   is_active: boolean;
+};
+
+export type UserUpdate = {
+  full_name?: string | null;
+  company_name?: string | null;
+  title?: string | null;
+  phone?: string | null;
 };
 
 export type Supplier = {
@@ -118,6 +128,10 @@ export function setSession(token: string, user: User): void {
   localStorage.setItem(USER_KEY, JSON.stringify(user));
 }
 
+export function storeUser(user: User): void {
+  localStorage.setItem(USER_KEY, JSON.stringify(user));
+}
+
 export function clearSession(): void {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
@@ -171,6 +185,8 @@ export const api = {
       json: { email, password },
     }),
   me: () => request<User>("/api/v1/auth/me"),
+  updateMe: (payload: UserUpdate) =>
+    request<User>("/api/v1/auth/me", { method: "PATCH", json: payload }),
 
   // suppliers
   listSuppliers: (params: { q?: string; country?: string; commodity?: string } = {}) => {

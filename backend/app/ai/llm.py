@@ -17,6 +17,8 @@ from app.core.config import get_settings
 
 
 class LLMClient(ABC):
+    provider_name: str = "unknown"
+
     @abstractmethod
     async def complete(self, system: str, user: str, max_tokens: int = 1024) -> str: ...
 
@@ -30,6 +32,8 @@ class MockLLM(LLMClient):
     Produces plausible, structured outputs based on the prompt content.
     Not a real model — just enough to let the UI and pipeline work.
     """
+
+    provider_name = "mock"
 
     async def complete(self, system: str, user: str, max_tokens: int = 1024) -> str:
         prompt = (system + "\n" + user).lower()
@@ -63,6 +67,8 @@ class MockLLM(LLMClient):
 
 
 class OpenAILLM(LLMClient):
+    provider_name = "openai"
+
     def __init__(self, api_key: str, model: str) -> None:
         try:
             from openai import AsyncOpenAI
@@ -97,6 +103,8 @@ class OpenAILLM(LLMClient):
 
 
 class AnthropicLLM(LLMClient):
+    provider_name = "anthropic"
+
     def __init__(self, api_key: str, model: str) -> None:
         try:
             from anthropic import AsyncAnthropic
@@ -132,11 +140,24 @@ class AnthropicLLM(LLMClient):
 
 @lru_cache
 def get_llm() -> LLMClient:
+    """Resolve the LLM backend.
+
+    Precedence:
+    1. Explicit LLM_PROVIDER + matching key → honour it.
+    2. LLM_PROVIDER=mock (default) but a real key present → auto-upgrade to
+       that provider. OpenAI wins if both keys are set, since the OpenAI
+       adapter has native JSON-mode support and is the default recommendation.
+    3. Otherwise → deterministic offline mock.
+    """
     settings = get_settings()
     provider = settings.llm_provider.lower()
     if provider == "openai" and settings.openai_api_key:
         return OpenAILLM(settings.openai_api_key, settings.openai_model)
     if provider == "anthropic" and settings.anthropic_api_key:
+        return AnthropicLLM(settings.anthropic_api_key, settings.anthropic_model)
+    if provider in ("mock", "") and settings.openai_api_key:
+        return OpenAILLM(settings.openai_api_key, settings.openai_model)
+    if provider in ("mock", "") and settings.anthropic_api_key:
         return AnthropicLLM(settings.anthropic_api_key, settings.anthropic_model)
     return MockLLM()
 
@@ -195,20 +216,54 @@ def _mock_classification(user: str) -> dict:
 
 
 def _mock_outreach(user: str) -> str:
-    commodity = _extract(user, "commodity") or "the specified commodity"
-    company = _extract(user, "company") or "your company"
+    ctx = _parse_inputs(user)
+    sender = ctx.get("sender") or {}
+    supplier = ctx.get("supplier") or {}
+    deal = ctx.get("deal") or {}
+
+    commodity = (
+        supplier.get("commodity")
+        or deal.get("commodity")
+        or _extract(user, "commodity")
+        or "the specified commodity"
+    )
+    supplier_name = supplier.get("name") or _extract(user, "company") or "your company"
+    sender_name = sender.get("full_name") or "[Your Name]"
+    sender_company = sender.get("company_name") or "[Your Company]"
+    sender_title = sender.get("title") or "Trader"
+    sender_email = sender.get("email") or ""
+    sender_phone = sender.get("phone") or ""
+
+    signature_lines = [sender_name, f"{sender_title}, {sender_company}"]
+    if sender_email:
+        signature_lines.append(sender_email)
+    if sender_phone:
+        signature_lines.append(sender_phone)
+
     return (
         f"Subject: Potential Partnership — {commodity.title()} Sourcing\n\n"
-        f"Dear {company} team,\n\n"
-        f"My name is [Your Name] from Atlas Trade. We work with verified end buyers of "
-        f"{commodity} and are exploring reliable supply partners. Based on public sources "
+        f"Dear {supplier_name} team,\n\n"
+        f"My name is {sender_name} from {sender_company}. We work with verified end buyers "
+        f"of {commodity} and are exploring reliable supply partners. Based on public sources "
         f"we understand you are an established supplier in this space.\n\n"
         f"If relevant, we would appreciate a brief call to align on current availability, "
         f"indicative pricing (FOB/CIF), and standard Incoterms. We sign NCNDA prior to "
         f"any commercial disclosure.\n\n"
         f"Looking forward to your response.\n\n"
-        f"Best regards,\n[Your Name]\nAtlas Trade\n"
+        f"Best regards,\n" + "\n".join(signature_lines) + "\n"
     )
+
+
+def _parse_inputs(user: str) -> dict:
+    """Best-effort extraction of the JSON block we inject into the prompt."""
+    match = re.search(r"\{.*\}", user, re.DOTALL)
+    if not match:
+        return {}
+    try:
+        data = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _mock_ncnda(user: str) -> str:
