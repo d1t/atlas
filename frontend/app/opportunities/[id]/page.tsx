@@ -3,6 +3,7 @@
 import { useParams, useRouter } from "next/navigation";
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { AppShell } from "../../../components/AppShell";
+import Link from "next/link";
 import {
   api,
   BuyerLead,
@@ -15,6 +16,7 @@ import {
   Opportunity,
   OPPORTUNITY_STATUS_LABELS,
   OpportunityDashboard,
+  Supplier,
   SupplierLead,
   SupplierLeadInput,
 } from "../../../lib/api";
@@ -130,6 +132,7 @@ export default function OpportunityWorkspacePage() {
       {addingSupplier && (
         <NewSupplierLeadModal
           opportunityId={id}
+          opportunityCommodity={opp.commodity}
           onClose={() => setAddingSupplier(false)}
           onCreated={async () => {
             setAddingSupplier(false);
@@ -722,13 +725,19 @@ function ScoreBadge({ score }: { score: number }) {
 
 function NewSupplierLeadModal({
   opportunityId,
+  opportunityCommodity,
   onClose,
   onCreated,
 }: {
   opportunityId: number;
+  opportunityCommodity?: string | null;
   onClose: () => void;
   onCreated: () => void;
 }) {
+  const [mode, setMode] = useState<"pick" | "manual">("pick");
+  const [search, setSearch] = useState("");
+  const [library, setLibrary] = useState<Supplier[] | null>(null);
+  const [pickedId, setPickedId] = useState<number | null>(null);
   const [form, setForm] = useState<SupplierLeadInput>({
     supplier_name: "",
     country: "",
@@ -741,12 +750,54 @@ function NewSupplierLeadModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await api.listSuppliers({
+          q: search || undefined,
+          commodity: opportunityCommodity || undefined,
+        });
+        if (!cancelled) setLibrary(list);
+      } catch (e) {
+        if (!cancelled)
+          setError(e instanceof Error ? e.message : "Failed to load suppliers");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [search, opportunityCommodity]);
+
+  const picked = library?.find((s) => s.id === pickedId) ?? null;
+
   async function submit(e: FormEvent) {
     e.preventDefault();
     setSubmitting(true);
     setError(null);
     try {
-      await api.createSupplierLead(opportunityId, form);
+      if (mode === "pick") {
+        if (!picked) {
+          setError("Pick a supplier from the list or switch to manual entry.");
+          setSubmitting(false);
+          return;
+        }
+        await api.createSupplierLead(opportunityId, {
+          supplier_id: picked.id,
+          supplier_name: picked.name,
+          country: picked.country ?? undefined,
+          email: picked.email ?? undefined,
+          price_mt: form.price_mt ?? null,
+          quoted_incoterms: form.quoted_incoterms ?? "FOB",
+          credibility_score:
+            typeof picked.credibility_score === "number"
+              ? picked.credibility_score
+              : form.credibility_score ?? 50,
+          responsiveness_score: form.responsiveness_score ?? 50,
+        });
+      } else {
+        await api.createSupplierLead(opportunityId, form);
+      }
       onCreated();
     } catch (err) {
       setError((err as Error).message);
@@ -759,9 +810,110 @@ function NewSupplierLeadModal({
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60">
       <form
         onSubmit={submit}
-        className="card w-full max-w-lg space-y-3 p-5"
+        className="card w-full max-w-2xl space-y-3 p-5"
       >
-        <h2 className="text-lg font-semibold">Add supplier lead</h2>
+        <div className="flex items-start justify-between">
+          <div>
+            <h2 className="text-lg font-semibold">Add supplier lead</h2>
+            <p className="mt-1 text-xs text-gray-400">
+              Pick from your supplier library, or add a new one manually.
+              Run <Link className="text-accent underline" href="/suppliers">AI Discover</Link>{" "}
+              first to populate your library for this commodity.
+            </p>
+          </div>
+          <div className="flex rounded-md border border-gray-700 text-xs">
+            <button
+              type="button"
+              onClick={() => setMode("pick")}
+              className={classNames(
+                "px-3 py-1",
+                mode === "pick" ? "bg-accent text-black" : "text-gray-300"
+              )}
+            >
+              From library
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("manual")}
+              className={classNames(
+                "px-3 py-1",
+                mode === "manual" ? "bg-accent text-black" : "text-gray-300"
+              )}
+            >
+              Manual entry
+            </button>
+          </div>
+        </div>
+
+        {mode === "pick" ? (
+          <div className="space-y-2">
+            <input
+              className="input w-full"
+              placeholder="Search suppliers by name…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            <div className="max-h-64 overflow-auto rounded-md border border-gray-700">
+              {library === null && (
+                <div className="p-3 text-xs text-gray-500">Loading…</div>
+              )}
+              {library && library.length === 0 && (
+                <div className="p-3 text-xs text-gray-500">
+                  No suppliers in your library yet. Switch to{" "}
+                  <button
+                    type="button"
+                    className="underline"
+                    onClick={() => setMode("manual")}
+                  >
+                    manual entry
+                  </button>
+                  , or{" "}
+                  <Link className="underline" href="/suppliers">
+                    run AI Discover
+                  </Link>{" "}
+                  to find suppliers for{" "}
+                  {opportunityCommodity || "this commodity"}.
+                </div>
+              )}
+              {library && library.length > 0 && (
+                <ul className="divide-y divide-gray-800">
+                  {library.map((s) => (
+                    <li key={s.id}>
+                      <button
+                        type="button"
+                        onClick={() => setPickedId(s.id)}
+                        className={classNames(
+                          "flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-surface2",
+                          pickedId === s.id && "bg-surface2"
+                        )}
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate font-medium text-gray-100">
+                            {s.name}
+                          </div>
+                          <div className="truncate text-xs text-gray-500">
+                            {(s.type ?? "unknown")} · {s.country || "—"} ·{" "}
+                            {s.email || "no email"}
+                          </div>
+                        </div>
+                        <div className="whitespace-nowrap text-xs text-gray-400">
+                          cred {s.credibility_score}
+                        </div>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            {picked && (
+              <div className="rounded-md bg-surface2 p-2 text-xs text-gray-300">
+                Selected: <span className="font-medium">{picked.name}</span>
+                {picked.email ? ` · ${picked.email}` : " · no email on file"}
+              </div>
+            )}
+          </div>
+        ) : (
+        <>
         <label className="block text-sm">
           <span className="text-gray-400">Supplier name</span>
           <input
@@ -792,6 +944,9 @@ function NewSupplierLeadModal({
             />
           </label>
         </div>
+        </>
+        )}
+
         <div className="grid grid-cols-2 gap-3">
           <label className="block text-sm">
             <span className="text-gray-400">Quoted price ($/MT)</span>
