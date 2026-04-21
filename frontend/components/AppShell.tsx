@@ -7,9 +7,11 @@ import { useAuth } from "../lib/auth";
 
 const NAV = [
   { href: "/dashboard", label: "Dashboard" },
+  { href: "/opportunities", label: "Opportunities" },
   { href: "/suppliers", label: "Suppliers" },
   { href: "/deals", label: "Deals" },
   { href: "/pipeline", label: "Pipeline" },
+  { href: "/profile", label: "Profile" },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {

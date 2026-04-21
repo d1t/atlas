@@ -3,7 +3,16 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
 
-DOCUMENT_TYPES = ["outreach_email", "spa_buyer", "spa_supplier", "ncnda", "fpa", "imfpa", "loi"]
+DOCUMENT_TYPES = [
+    "outreach_email",
+    "counter_offer_email",
+    "spa_buyer",
+    "spa_supplier",
+    "ncnda",
+    "fpa",
+    "imfpa",
+    "loi",
+]
 
 
 class Document(Base, TimestampMixin):

@@ -3,8 +3,11 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { AppShell } from "../../components/AppShell";
+import { PriceDisplay } from "../../components/PriceDisplay";
 import { api, Deal, PipelineStats, STAGE_LABELS } from "../../lib/api";
 import { money, numberShort } from "../../lib/format";
+
+const DASHBOARD_COMMODITIES = ["sugar", "wheat", "corn", "coffee", "cocoa", "cotton"];
 
 export default function DashboardPage() {
   const [stats, setStats] = useState<PipelineStats | null>(null);
@@ -122,6 +125,20 @@ export default function DashboardPage() {
                 ))
               : <p className="text-sm text-gray-500">Loading…</p>}
           </div>
+        </div>
+      </div>
+
+      <div className="mt-6">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold">Market reference prices</h2>
+          <span className="text-xs text-gray-500">
+            Yahoo Finance · 5-min cache · reference only
+          </span>
+        </div>
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+          {DASHBOARD_COMMODITIES.map((c) => (
+            <PriceDisplay key={c} commodity={c} />
+          ))}
         </div>
       </div>
     </AppShell>

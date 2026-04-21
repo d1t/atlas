@@ -37,6 +37,19 @@ class Deal(Base, TimestampMixin):
     buyer_id: Mapped[int | None] = mapped_column(ForeignKey("suppliers.id", ondelete="SET NULL"))
     owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
 
+    # V2: deals are a derived entity created when a supplier lead and buyer lead on the
+    # same opportunity are matched. All three FKs are nullable for backward-compat with
+    # pre-V2 deals that were created directly against counterparties.
+    opportunity_id: Mapped[int | None] = mapped_column(
+        ForeignKey("opportunities.id", ondelete="SET NULL"), index=True
+    )
+    supplier_lead_id: Mapped[int | None] = mapped_column(
+        ForeignKey("supplier_leads.id", ondelete="SET NULL")
+    )
+    buyer_lead_id: Mapped[int | None] = mapped_column(
+        ForeignKey("buyer_leads.id", ondelete="SET NULL")
+    )
+
     notes: Mapped[str | None] = mapped_column(Text)
     metrics: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
 

@@ -12,12 +12,15 @@ system works end-to-end without network access or browser drivers.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai import get_llm
+from app.ai.llm import MockLLM
 from app.models.supplier import Supplier
 from app.scrapers.web_scraper import WebScraper
 
@@ -47,12 +50,75 @@ class SupplierDiscoveryService:
     ) -> list[SupplierCandidate]:
         raw_hits = await self.scraper.search_suppliers(commodity=commodity, country=country)
         if raw_hits:
-            candidates = await self._extract_with_llm(raw_hits, commodity, country)
+            # Real hits from a live search backend (e.g. Tavily). If a real LLM
+            # is configured, let it extract structured records; otherwise fall
+            # back to a deterministic URL/title parser so the user still sees
+            # real company domains rather than synthetic names.
+            if isinstance(self.llm, MockLLM):
+                candidates = self._heuristic_from_hits(raw_hits, commodity, country)
+            else:
+                candidates = await self._extract_with_llm(raw_hits, commodity, country)
         else:
             candidates = await self._llm_only_discovery(commodity, country, limit)
 
         candidates = await self._dedupe(candidates)
         return candidates[:limit]
+
+    def _heuristic_from_hits(
+        self, hits: list[dict], commodity: str, country: str | None
+    ) -> list[SupplierCandidate]:
+        """Deterministic fallback when we have real search hits but no real LLM.
+
+        Strategy: treat each unique domain as one supplier. Company name is
+        taken from the hit title (cleaned) or the domain's middle label.
+        Emails and phones are harvested from the snippet if present.
+        """
+        by_domain: dict[str, dict] = {}
+        email_re = re.compile(r"[\w\.\-+]+@[\w\.\-]+\.[a-z]{2,}", re.IGNORECASE)
+        phone_re = re.compile(r"(?:\+?\d[\d\-\s()]{7,}\d)")
+
+        for h in hits:
+            url = (h.get("url") or "").strip()
+            if not url:
+                continue
+            parsed = urlparse(url)
+            domain = (parsed.netloc or "").lower().removeprefix("www.")
+            if not domain or _is_directory_domain(domain):
+                continue
+            entry = by_domain.setdefault(
+                domain,
+                {
+                    "name": _clean_title(h.get("title") or "") or _name_from_domain(domain),
+                    "website": f"{parsed.scheme or 'https'}://{domain}",
+                    "description": (h.get("snippet") or "").strip()[:400],
+                    "email": None,
+                    "phone": None,
+                },
+            )
+            snippet = h.get("snippet") or ""
+            if not entry["email"]:
+                m = email_re.search(snippet)
+                if m:
+                    entry["email"] = m.group(0).lower()
+            if not entry["phone"]:
+                m = phone_re.search(snippet)
+                if m:
+                    entry["phone"] = m.group(0).strip()
+
+        return [
+            SupplierCandidate(
+                name=row["name"],
+                type="unknown",
+                country=country,
+                commodity=commodity,
+                website=row["website"],
+                email=row["email"],
+                phone=row["phone"],
+                description=row["description"] or None,
+                source="tavily",
+            )
+            for row in by_domain.values()
+        ]
 
     async def _extract_with_llm(
         self, raw_hits: list[dict], commodity: str, country: str | None
@@ -141,3 +207,67 @@ class SupplierDiscoveryService:
             created.append(supplier)
         await self.db.flush()
         return created
+
+
+# ---------------- module-level helpers ----------------
+
+_DIRECTORY_DOMAINS = {
+    "linkedin.com",
+    "facebook.com",
+    "twitter.com",
+    "x.com",
+    "instagram.com",
+    "youtube.com",
+    "wikipedia.org",
+    "alibaba.com",
+    "made-in-china.com",
+    "tradeindia.com",
+    "indiamart.com",
+    "europages.com",
+    "panjiva.com",
+    "importgenius.com",
+    "volza.com",
+    "reddit.com",
+    "quora.com",
+    "bloomberg.com",
+    "reuters.com",
+    "forbes.com",
+    "nytimes.com",
+}
+
+_GENERIC_TITLE_PARTS = re.compile(
+    r"^(contact(\s+us)?|home|homepage|about(\s+us)?|welcome|index|official\s+site|"
+    r"products?|services?)$",
+    re.IGNORECASE,
+)
+
+_TRAILING_SUFFIX = re.compile(
+    r"\s*[-|–—]\s*(home|about|contact|homepage|official site|linkedin|facebook).*$",
+    re.IGNORECASE,
+)
+
+
+def _is_directory_domain(domain: str) -> bool:
+    return any(domain == d or domain.endswith("." + d) for d in _DIRECTORY_DOMAINS)
+
+
+def _clean_title(title: str) -> str:
+    """Turn a raw SERP title into a usable company name.
+
+    Strips generic leading segments like "Contact Us |" / "Home -" and trailing
+    "- Official Site" style suffixes. If the whole title is generic, returns
+    empty so the caller can fall back to the domain name.
+    """
+    t = _TRAILING_SUFFIX.sub("", title).strip()
+    # Split on common separators and drop leading generic parts like "Contact Us".
+    parts = [p.strip() for p in re.split(r"\s*[|–—]\s*|\s+-\s+", t) if p.strip()]
+    while parts and _GENERIC_TITLE_PARTS.match(parts[0]):
+        parts.pop(0)
+    if not parts:
+        return ""
+    return parts[0][:120]
+
+
+def _name_from_domain(domain: str) -> str:
+    label = domain.split(".")[0]
+    return label.replace("-", " ").title()

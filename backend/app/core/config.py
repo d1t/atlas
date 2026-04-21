@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-3-5-sonnet-latest"
 
+    # Third-party integrations (all optional; empty string => offline fallback)
+    tavily_api_key: str = ""
+    tavily_max_results: int = 10
+
     cors_origins: str = "http://localhost:3000"
 
     jwt_algorithm: str = "HS256"
