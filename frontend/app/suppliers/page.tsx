@@ -54,6 +54,12 @@ export default function SuppliersPage() {
     }
   }
 
+  function selectSupplier(s: Supplier | null) {
+    setSelected(s);
+    // Stale classification belongs to a different supplier; clear it.
+    setClassifyResult(null);
+  }
+
   async function classify(id: number) {
     setClassifying(true);
     setClassifyResult(null);
@@ -152,7 +158,7 @@ export default function SuppliersPage() {
                 <tr
                   key={s.id}
                   className="row cursor-pointer"
-                  onClick={() => setSelected(s)}
+                  onClick={() => selectSupplier(s)}
                 >
                   <td className="py-2 font-medium text-gray-100">{s.name}</td>
                   <td>

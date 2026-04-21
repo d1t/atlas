@@ -131,6 +131,7 @@ class SupplierDiscoveryService:
                     "description": (h.get("snippet") or "").strip()[:400],
                     "email": None,
                     "phone": None,
+                    "source": h.get("source") or "web",
                 },
             )
             snippet = h.get("snippet") or ""
@@ -153,7 +154,7 @@ class SupplierDiscoveryService:
                 email=row["email"],
                 phone=row["phone"],
                 description=row["description"] or None,
-                source="tavily",
+                source=row["source"],
             )
             for row in by_domain.values()
         ]
