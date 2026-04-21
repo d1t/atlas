@@ -292,6 +292,83 @@ export const api = {
   pipelineBoard: () => request<PipelineBoard>("/api/v1/pipeline/board"),
   pipelineStats: () => request<PipelineStats>("/api/v1/pipeline/stats"),
 
+  // opportunities (V2 multi-counterparty orchestration)
+  listOpportunities: () =>
+    request<Opportunity[]>("/api/v1/opportunities"),
+  createOpportunity: (payload: OpportunityInput) =>
+    request<Opportunity>("/api/v1/opportunities", {
+      method: "POST",
+      json: payload,
+    }),
+  getOpportunity: (id: number) =>
+    request<Opportunity>(`/api/v1/opportunities/${id}`),
+  updateOpportunity: (id: number, payload: Partial<OpportunityInput> & { status?: string }) =>
+    request<Opportunity>(`/api/v1/opportunities/${id}`, {
+      method: "PATCH",
+      json: payload,
+    }),
+  deleteOpportunity: (id: number) =>
+    request<void>(`/api/v1/opportunities/${id}`, { method: "DELETE" }),
+  getOpportunityDashboard: (id: number) =>
+    request<OpportunityDashboard>(`/api/v1/opportunities/${id}/dashboard`),
+  createSupplierLead: (opportunityId: number, payload: SupplierLeadInput) =>
+    request<SupplierLead>(
+      `/api/v1/opportunities/${opportunityId}/supplier-leads`,
+      { method: "POST", json: payload },
+    ),
+  updateSupplierLead: (
+    opportunityId: number,
+    leadId: number,
+    payload: Partial<SupplierLeadInput> & { status?: string; last_contacted_at?: string },
+  ) =>
+    request<SupplierLead>(
+      `/api/v1/opportunities/${opportunityId}/supplier-leads/${leadId}`,
+      { method: "PATCH", json: payload },
+    ),
+  deleteSupplierLead: (opportunityId: number, leadId: number) =>
+    request<void>(
+      `/api/v1/opportunities/${opportunityId}/supplier-leads/${leadId}`,
+      { method: "DELETE" },
+    ),
+  createBuyerLead: (opportunityId: number, payload: BuyerLeadInput) =>
+    request<BuyerLead>(`/api/v1/opportunities/${opportunityId}/buyer-leads`, {
+      method: "POST",
+      json: payload,
+    }),
+  updateBuyerLead: (
+    opportunityId: number,
+    leadId: number,
+    payload: Partial<BuyerLeadInput> & { status?: string; last_contacted_at?: string },
+  ) =>
+    request<BuyerLead>(
+      `/api/v1/opportunities/${opportunityId}/buyer-leads/${leadId}`,
+      { method: "PATCH", json: payload },
+    ),
+  deleteBuyerLead: (opportunityId: number, leadId: number) =>
+    request<void>(
+      `/api/v1/opportunities/${opportunityId}/buyer-leads/${leadId}`,
+      { method: "DELETE" },
+    ),
+  promoteMatchToDeal: (
+    opportunityId: number,
+    payload: { supplier_lead_id: number; buyer_lead_id: number; title?: string },
+  ) =>
+    request<{
+      deal_id: number;
+      opportunity_id: number;
+      supplier_lead_id: number;
+      buyer_lead_id: number;
+      title: string;
+      buy_price: number;
+      sell_price: number;
+      volume_mt: number;
+      margin_per_mt: number;
+      total_margin: number;
+    }>(`/api/v1/opportunities/${opportunityId}/deals`, {
+      method: "POST",
+      json: payload,
+    }),
+
   // prices (Yahoo Finance)
   listCommodities: () => request<{ commodities: CommodityInfo[] }>("/api/v1/prices"),
   getPrice: (commodity: string, refresh = false) =>
@@ -322,6 +399,172 @@ export type CommodityQuote = {
   previous_close: number | null;
   change_pct: number | null;
   source: string;
+};
+
+// --- V2 opportunity types ---
+
+export type OpportunityInput = {
+  title: string;
+  commodity: string;
+  volume_mt?: number;
+  destination_country?: string | null;
+  destination_port?: string | null;
+  incoterms?: string | null;
+  target_price_min?: number | null;
+  target_price_max?: number | null;
+  currency?: string;
+  notes?: string | null;
+};
+
+export type Opportunity = {
+  id: number;
+  title: string;
+  commodity: string;
+  volume_mt: number;
+  destination_country: string | null;
+  destination_port: string | null;
+  incoterms: string | null;
+  target_price_min: number | null;
+  target_price_max: number | null;
+  currency: string;
+  notes: string | null;
+  status: string;
+  owner_id: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type SupplierLeadInput = {
+  supplier_id?: number | null;
+  supplier_name?: string | null;
+  country?: string | null;
+  email?: string | null;
+  price_mt?: number | null;
+  quoted_incoterms?: string | null;
+  min_order_mt?: number | null;
+  lead_time_days?: number | null;
+  payment_terms?: string | null;
+  credibility_score?: number;
+  responsiveness_score?: number;
+  notes?: string | null;
+};
+
+export type SupplierLead = Required<
+  Pick<SupplierLeadInput, "credibility_score" | "responsiveness_score">
+> & {
+  id: number;
+  opportunity_id: number;
+  status: string;
+  last_contacted_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  supplier_id: number | null;
+  supplier_name: string | null;
+  country: string | null;
+  email: string | null;
+  price_mt: number | null;
+  quoted_incoterms: string | null;
+  min_order_mt: number | null;
+  lead_time_days: number | null;
+  payment_terms: string | null;
+  notes: string | null;
+};
+
+export type BuyerLeadInput = {
+  buyer_id?: number | null;
+  buyer_name?: string | null;
+  country?: string | null;
+  email?: string | null;
+  target_price_mt?: number | null;
+  volume_mt?: number | null;
+  appetite?: "low" | "medium" | "high";
+  urgency?: "low" | "medium" | "high";
+  feedback?: string | null;
+  notes?: string | null;
+};
+
+export type BuyerLead = {
+  id: number;
+  opportunity_id: number;
+  status: string;
+  last_contacted_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  buyer_id: number | null;
+  buyer_name: string | null;
+  country: string | null;
+  email: string | null;
+  target_price_mt: number | null;
+  volume_mt: number | null;
+  appetite: "low" | "medium" | "high";
+  urgency: "low" | "medium" | "high";
+  feedback: string | null;
+  notes: string | null;
+};
+
+export type MatchPair = {
+  supplier_lead_id: number;
+  supplier_name: string | null;
+  supplier_price_mt: number | null;
+  buyer_lead_id: number;
+  buyer_name: string | null;
+  buyer_target_price_mt: number | null;
+  margin_per_mt: number;
+  total_margin: number | null;
+  score: number;
+  reasoning: string[];
+};
+
+export type MatchingResult = {
+  opportunity_id: number;
+  total_pairs: number;
+  viable_pairs: number;
+  pairs: MatchPair[];
+};
+
+export type HealthFactor = {
+  name: string;
+  weight: number;
+  value: number;
+  contribution: number;
+  detail: string;
+};
+
+export type HealthScore = {
+  opportunity_id: number;
+  score: number;
+  status: string;
+  factors: HealthFactor[];
+  recommendation: string;
+};
+
+export type NextAction = {
+  action: string;
+  priority: "high" | "medium" | "low";
+  reasoning: string;
+};
+
+export type NextActionsOut = {
+  opportunity_id: number;
+  actions: NextAction[];
+};
+
+export type OpportunityDashboard = {
+  opportunity: Opportunity;
+  supplier_leads: SupplierLead[];
+  buyer_leads: BuyerLead[];
+  matches: MatchingResult;
+  health: HealthScore;
+  next_actions: NextActionsOut;
+};
+
+export const OPPORTUNITY_STATUS_LABELS: Record<string, string> = {
+  draft: "Draft",
+  sourcing: "Sourcing",
+  negotiating: "Negotiating",
+  matched: "Matched",
+  closed: "Closed",
+  lost: "Lost",
 };
 
 export const STAGE_LABELS: Record<string, string> = {
