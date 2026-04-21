@@ -26,10 +26,62 @@ _INPUT_GUIDE = (
 
 DOC_SYSTEMS = {
     "outreach_email": (
-        "You are a commodity trader writing a cold outreach email to a potential supplier. "
+        "You are a senior commodity trader writing a cold outreach email to a potential "
+        "supplier. This is the FIRST message — the goal is to earn a reply, not to close "
+        "a deal. "
         f"{_INPUT_GUIDE} "
-        "Tone: professional, concise, warm but not salesy. Include a subject line. "
-        "Under 200 words. Sign off with the sender's full name, title, company, and email."
+        "NEGOTIATION RULES (non-negotiable): "
+        "(1) Do NOT quote any offer price, target price, bid price, or total deal value. "
+        "Never invent a USD/MT or USD/lb number. Pricing is decided after the supplier "
+        "responds — leading with a price weakens the buyer's position. "
+        "(2) If inputs contain buy_price or sell_price, treat them as INTERNAL ONLY and "
+        "do not mention them. "
+        "(3) Anchor on SPECS, not price: monthly volume, quality spec (e.g. ICUMSA 45 for "
+        "sugar, grade #2 for corn), packaging (jumbo bags / 50kg / bulk), destination port, "
+        "desired first-shipment window, incoterms preference (FOB / CFR / CIF). "
+        "(4) Ask the supplier for THEIR indicative pricing: FOB and CFR to destination, "
+        "minimum order quantity, lead time from LC confirmation, payment terms accepted "
+        "(SBLC, DLC at sight, etc). "
+        "(5) Signal seriousness without committing: mention readiness to execute NCNDA on "
+        "interest, and that end-buyer LOI or proof-of-funds is available on request. "
+        "(6) No filler, no hype, no emojis. Do not praise the supplier's reputation in "
+        "more than one short clause. "
+        "STRUCTURE (follow exactly): subject line that names commodity + monthly volume + "
+        "destination country; one-line identification of sender.company_name and its "
+        "activity; one-line reason this supplier is relevant (reference their country / "
+        "mill / product if known); a short bulleted or line-separated spec block with the "
+        "requirements from rule 3; the explicit ask from rule 4; the NCNDA readiness "
+        "line from rule 5; soft close offering a 20-minute call this week. "
+        "Under 180 words. Plain text (not Markdown). Sign off with the sender's full "
+        "name, title, company, email, and phone on separate lines."
+    ),
+    "counter_offer_email": (
+        "You are a senior commodity trader writing a counter-offer email in response to a "
+        "supplier's quote. "
+        f"{_INPUT_GUIDE} "
+        "Additional context: inputs may include `market_reference` "
+        "(exchange, ticker, price in USD/MT, source) and `supplier_quote` "
+        "(supplier's offered price in USD/MT, incoterms, payment terms). "
+        "NEGOTIATION RULES: "
+        "(1) This IS the email where a price appears — but it must be JUSTIFIED, not a "
+        "random lowball. If market_reference is provided, explicitly anchor the counter "
+        "to that futures price plus a transparent basis: 'based on ICE SB=F at "
+        "$<price>/MT plus a $<basis>/MT freight-and-finance basis, our working level is "
+        "$<counter>/MT CFR <port>'. "
+        "(2) If market_reference is not provided, anchor to prevailing market context in "
+        "general terms and request the supplier's basis rationale. "
+        "(3) The counter should sit BELOW the midpoint between market reference and the "
+        "supplier's quote — rule of thumb 3-5% below the supplier quote, adjusted by "
+        "volume and payment terms. "
+        "(4) Give the supplier two levers they can use to justify a smaller concession: "
+        "willingness to pre-pay a deposit, or to accept DLC at sight on a shorter tenor. "
+        "This protects the price without looking stubborn. "
+        "(5) Never apologise for the counter. Never signal time pressure on the buyer "
+        "side. Frame it as 'working level at which we can execute LC'. "
+        "(6) Close with a concrete next step: either acceptance at the counter, or a "
+        "counter-counter with specs the supplier can improve (tonnage upsize, tenor, "
+        "ICUMSA grade). "
+        "Under 200 words. Plain text. Sign off as in the outreach email."
     ),
     "spa_buyer": (
         "You are a commodity trade lawyer. Generate a complete, professional SALE AND "
@@ -75,6 +127,7 @@ DOC_SYSTEMS = {
 
 DOC_TITLES = {
     "outreach_email": "Supplier Outreach Email",
+    "counter_offer_email": "Counter-Offer Email",
     "spa_buyer": "Sale & Purchase Agreement (Buyer)",
     "spa_supplier": "Sale & Purchase Agreement (Supplier)",
     "ncnda": "Non-Circumvention, Non-Disclosure Agreement",

@@ -29,7 +29,8 @@ const STAGES = [
 ];
 
 const DOC_TYPES = [
-  { value: "outreach_email", label: "Outreach email" },
+  { value: "outreach_email", label: "Outreach email (no price)" },
+  { value: "counter_offer_email", label: "Counter-offer email (vs market)" },
   { value: "ncnda", label: "NCNDA" },
   { value: "loi", label: "LOI" },
   { value: "spa_buyer", label: "SPA (buyer)" },
