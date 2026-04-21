@@ -11,16 +11,15 @@ system works end-to-end without network access or browser drivers.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
-import asyncio
-import logging
 
 from app.ai import get_llm
 from app.ai.llm import MockLLM
