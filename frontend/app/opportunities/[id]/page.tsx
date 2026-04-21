@@ -35,6 +35,7 @@ export default function OpportunityWorkspacePage() {
     try {
       const d = await api.getOpportunityDashboard(id);
       setData(d);
+      setError(null);
     } catch (e) {
       setError((e as Error).message);
     }

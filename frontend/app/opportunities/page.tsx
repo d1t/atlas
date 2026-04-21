@@ -19,6 +19,7 @@ export default function OpportunitiesPage() {
   async function refresh() {
     try {
       setRows(await api.listOpportunities());
+      setError(null);
     } catch (e) {
       setError((e as Error).message);
     }
