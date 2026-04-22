@@ -16,6 +16,7 @@ export default function SuppliersPage() {
     type: string;
     confidence: number;
     reasoning: string;
+    supplierId: number;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -66,12 +67,19 @@ export default function SuppliersPage() {
     setError(null);
     try {
       const result = await api.classifySupplier(id);
-      setClassifyResult(result);
       await refresh();
-      if (selected?.id === id) {
-        const fresh = await api.getSupplier(id);
-        setSelected(fresh);
-      }
+      // Guard every post-await state mutation against the user having
+      // navigated to a different supplier in the meantime. `selected`
+      // here is the live value (setSelected is only called below when
+      // the id still matches), so this stale-closure check is safe.
+      setSelected((current) => {
+        if (current?.id !== id) return current;
+        setClassifyResult({ ...result, supplierId: id });
+        api.getSupplier(id).then((fresh) => {
+          setSelected((c) => (c?.id === id ? fresh : c));
+        });
+        return current;
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Classification failed");
     } finally {
@@ -236,7 +244,7 @@ export default function SuppliersPage() {
                 </div>
               </div>
 
-              {classifyResult && selected && (
+              {classifyResult && selected && classifyResult.supplierId === selected.id && (
                 <div className="mt-3 rounded-md border border-accent/30 bg-accent/10 p-3 text-xs">
                   <div className="mb-1 font-medium text-accent">
                     Classified as <span className="uppercase">{classifyResult.type}</span>
