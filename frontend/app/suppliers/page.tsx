@@ -11,6 +11,12 @@ export default function SuppliersPage() {
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [selected, setSelected] = useState<Supplier | null>(null);
   const [discovering, setDiscovering] = useState(false);
+  const [classifying, setClassifying] = useState(false);
+  const [classifyResult, setClassifyResult] = useState<{
+    type: string;
+    confidence: number;
+    reasoning: string;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function refresh() {
@@ -48,12 +54,28 @@ export default function SuppliersPage() {
     }
   }
 
+  function selectSupplier(s: Supplier | null) {
+    setSelected(s);
+    // Stale classification belongs to a different supplier; clear it.
+    setClassifyResult(null);
+  }
+
   async function classify(id: number) {
-    await api.classifySupplier(id);
-    await refresh();
-    if (selected?.id === id) {
-      const fresh = await api.getSupplier(id);
-      setSelected(fresh);
+    setClassifying(true);
+    setClassifyResult(null);
+    setError(null);
+    try {
+      const result = await api.classifySupplier(id);
+      setClassifyResult(result);
+      await refresh();
+      if (selected?.id === id) {
+        const fresh = await api.getSupplier(id);
+        setSelected(fresh);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Classification failed");
+    } finally {
+      setClassifying(false);
     }
   }
 
@@ -136,7 +158,7 @@ export default function SuppliersPage() {
                 <tr
                   key={s.id}
                   className="row cursor-pointer"
-                  onClick={() => setSelected(s)}
+                  onClick={() => selectSupplier(s)}
                 >
                   <td className="py-2 font-medium text-gray-100">{s.name}</td>
                   <td>
@@ -174,8 +196,9 @@ export default function SuppliersPage() {
                 <button
                   className="btn-ghost"
                   onClick={() => classify(selected.id)}
+                  disabled={classifying}
                 >
-                  AI classify
+                  {classifying ? "Classifying…" : "AI classify"}
                 </button>
               </div>
 
@@ -212,6 +235,18 @@ export default function SuppliersPage() {
                   </div>
                 </div>
               </div>
+
+              {classifyResult && selected && (
+                <div className="mt-3 rounded-md border border-accent/30 bg-accent/10 p-3 text-xs">
+                  <div className="mb-1 font-medium text-accent">
+                    Classified as <span className="uppercase">{classifyResult.type}</span>
+                    {" "}· confidence {(classifyResult.confidence * 100).toFixed(0)}%
+                  </div>
+                  {classifyResult.reasoning && (
+                    <div className="text-gray-300">{classifyResult.reasoning}</div>
+                  )}
+                </div>
+              )}
 
               {selected.red_flags.length > 0 && (
                 <div className="mt-3">
