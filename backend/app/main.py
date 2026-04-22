@@ -55,6 +55,14 @@ _DEAL_NEW_COLUMNS: dict[str, str] = {
     "buyer_lead_id": "INTEGER",
 }
 
+# Negotiation-strategy columns added to supplier_leads / buyer_leads. Kept as
+# nullable-with-default so pre-existing rows stay valid.
+_LEAD_NEGOTIATION_COLUMNS: dict[str, str] = {
+    "negotiation_stage": "INTEGER DEFAULT 1",
+    "intel": "JSON",
+    "disclosed": "JSON",
+}
+
 
 async def _ensure_columns(
     conn, table: str, new_columns: dict[str, str]
@@ -99,12 +107,18 @@ async def _ensure_deal_columns(conn) -> None:
     await _ensure_columns(conn, "deals", _DEAL_NEW_COLUMNS)
 
 
+async def _ensure_lead_negotiation_columns(conn) -> None:
+    await _ensure_columns(conn, "supplier_leads", _LEAD_NEGOTIATION_COLUMNS)
+    await _ensure_columns(conn, "buyer_leads", _LEAD_NEGOTIATION_COLUMNS)
+
+
 @app.on_event("startup")
 async def on_startup() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await _ensure_user_columns(conn)
         await _ensure_deal_columns(conn)
+        await _ensure_lead_negotiation_columns(conn)
     llm = get_llm()
     logger.info(
         "Atlas backend ready (env=%s, llm=%s, configured=%s)",

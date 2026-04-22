@@ -11,6 +11,7 @@ import {
   HealthScore,
   MatchPair,
   MatchingResult,
+  NEGOTIATION_STAGE_LABELS,
   NextAction,
   NextActionsOut,
   Opportunity,
@@ -373,11 +374,13 @@ function SupplierPanel({
         <thead className="text-left text-gray-500">
           <tr>
             <th className="pb-1.5 font-medium">Name / country</th>
+            <th className="font-medium">Stage</th>
             <th className="font-medium">Price</th>
             <th className="font-medium">Credibility</th>
             <th className="font-medium">Response</th>
             <th className="font-medium">Status</th>
             <th className="font-medium">Last contact</th>
+            <th className="font-medium" />
           </tr>
         </thead>
         <tbody>
@@ -391,7 +394,7 @@ function SupplierPanel({
           ))}
           {supplierLeads.length === 0 && (
             <tr>
-              <td colSpan={6} className="py-6 text-center text-gray-500">
+              <td colSpan={8} className="py-6 text-center text-gray-500">
                 No supplier leads yet.
               </td>
             </tr>
@@ -411,6 +414,7 @@ function SupplierRow({
   lead: SupplierLead;
   onChange: () => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
   async function updateStatus(status: string) {
     await api.updateSupplierLead(opportunityId, lead.id, { status });
     onChange();
@@ -428,51 +432,397 @@ function SupplierRow({
     onChange();
   }
   return (
-    <tr className="row">
-      <td className="py-1.5">
-        <div className="text-gray-200">{lead.supplier_name || "—"}</div>
-        <div className="text-[11px] text-gray-500">{lead.country || "—"}</div>
-      </td>
-      <td className="text-gray-300">
-        {lead.price_mt != null ? `$${lead.price_mt.toFixed(0)}` : "—"}
-        {lead.quoted_incoterms && (
-          <span className="text-[11px] text-gray-500">
-            {" "}
-            {lead.quoted_incoterms}
-          </span>
+    <>
+      <tr className="row">
+        <td className="py-1.5">
+          <div className="text-gray-200">{lead.supplier_name || "—"}</div>
+          <div className="text-[11px] text-gray-500">{lead.country || "—"}</div>
+        </td>
+        <td>
+          <StageBadge stage={lead.negotiation_stage} />
+        </td>
+        <td className="text-gray-300">
+          {lead.price_mt != null ? `$${lead.price_mt.toFixed(0)}` : "—"}
+          {lead.quoted_incoterms && (
+            <span className="text-[11px] text-gray-500">
+              {" "}
+              {lead.quoted_incoterms}
+            </span>
+          )}
+        </td>
+        <td className="text-gray-300">{lead.credibility_score}</td>
+        <td className="text-gray-300">{lead.responsiveness_score}</td>
+        <td>
+          <select
+            className="input text-xs"
+            value={lead.status}
+            onChange={(e) => updateStatus(e.target.value)}
+          >
+            {SUP_STATUSES.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        </td>
+        <td className="text-gray-400">
+          <div>
+            {lead.last_contacted_at
+              ? new Date(lead.last_contacted_at).toLocaleDateString()
+              : "—"}
+          </div>
+          <div className="mt-0.5 flex gap-2 text-[11px]">
+            <button
+              className="text-accent hover:underline"
+              onClick={markContacted}
+            >
+              log contact
+            </button>
+            <button className="text-red-400 hover:underline" onClick={remove}>
+              remove
+            </button>
+          </div>
+        </td>
+        <td className="text-right">
+          <button
+            className="btn-ghost text-[11px]"
+            onClick={() => setExpanded((v) => !v)}
+            title={expanded ? "Collapse" : "Edit details + audit"}
+          >
+            {expanded ? "close" : "edit"}
+          </button>
+        </td>
+      </tr>
+      {expanded && (
+        <tr>
+          <td colSpan={8} className="bg-black/20 px-3 py-3">
+            <SupplierLeadEditor
+              opportunityId={opportunityId}
+              lead={lead}
+              onChange={onChange}
+              onClose={() => setExpanded(false)}
+            />
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function StageBadge({ stage }: { stage: number }) {
+  const s = Math.min(5, Math.max(1, stage || 1));
+  const label = NEGOTIATION_STAGE_LABELS[s] || `Stage ${s}`;
+  const colour =
+    s === 1
+      ? "bg-gray-700 text-gray-200"
+      : s === 2
+        ? "bg-blue-900/60 text-blue-200"
+        : s === 3
+          ? "bg-amber-900/60 text-amber-200"
+          : s === 4
+            ? "bg-purple-900/60 text-purple-200"
+            : "bg-emerald-900/60 text-emerald-200";
+  return (
+    <span
+      className={classNames(
+        "inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium",
+        colour,
+      )}
+      title={`Negotiation stage ${s} of 5`}
+    >
+      {s}/5 · {label}
+    </span>
+  );
+}
+
+function AuditPanel({
+  intel,
+  disclosed,
+}: {
+  intel: Record<string, unknown>;
+  disclosed: Record<string, unknown>;
+}) {
+  const intelKeys = Object.keys(intel || {});
+  const disclosedKeys = Object.keys(disclosed || {});
+  return (
+    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+      <div className="rounded border border-emerald-900/60 bg-emerald-950/20 p-2.5">
+        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-300">
+          What we know about them
+        </div>
+        {intelKeys.length === 0 ? (
+          <div className="text-[11px] italic text-gray-500">
+            No intel yet. It fills in as replies are logged.
+          </div>
+        ) : (
+          <ul className="space-y-0.5 text-[11px] text-gray-200">
+            {intelKeys.map((k) => (
+              <li key={k}>
+                <span className="text-gray-400">{k}:</span>{" "}
+                <span className="font-mono">
+                  {JSON.stringify((intel as Record<string, unknown>)[k])}
+                </span>
+              </li>
+            ))}
+          </ul>
         )}
-      </td>
-      <td className="text-gray-300">{lead.credibility_score}</td>
-      <td className="text-gray-300">{lead.responsiveness_score}</td>
-      <td>
-        <select
-          className="input text-xs"
-          value={lead.status}
-          onChange={(e) => updateStatus(e.target.value)}
+      </div>
+      <div className="rounded border border-amber-900/60 bg-amber-950/20 p-2.5">
+        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-amber-300">
+          What we&apos;ve told them
+        </div>
+        {disclosedKeys.length === 0 ? (
+          <div className="text-[11px] italic text-gray-500">
+            Nothing disclosed yet.
+          </div>
+        ) : (
+          <ul className="space-y-0.5 text-[11px] text-gray-200">
+            {disclosedKeys.map((k) => (
+              <li key={k}>
+                <span className="text-gray-400">{k}:</span>{" "}
+                <span className="font-mono">
+                  {JSON.stringify(
+                    (disclosed as Record<string, unknown>)[k],
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SupplierLeadEditor({
+  opportunityId,
+  lead,
+  onChange,
+  onClose,
+}: {
+  opportunityId: number;
+  lead: SupplierLead;
+  onChange: () => void;
+  onClose: () => void;
+}) {
+  const router = useRouter();
+  const [form, setForm] = useState<{
+    price_mt: number | "";
+    quoted_incoterms: string;
+    min_order_mt: number | "";
+    lead_time_days: number | "";
+    payment_terms: string;
+    credibility_score: number;
+    responsiveness_score: number;
+    negotiation_stage: number;
+    notes: string;
+  }>({
+    price_mt: lead.price_mt ?? "",
+    quoted_incoterms: lead.quoted_incoterms ?? "",
+    min_order_mt: lead.min_order_mt ?? "",
+    lead_time_days: lead.lead_time_days ?? "",
+    payment_terms: lead.payment_terms ?? "",
+    credibility_score: lead.credibility_score,
+    responsiveness_score: lead.responsiveness_score,
+    negotiation_stage: lead.negotiation_stage,
+    notes: lead.notes ?? "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [composing, setComposing] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function save() {
+    setSaving(true);
+    setErr(null);
+    try {
+      const payload: SupplierLeadInput = {
+        price_mt: form.price_mt === "" ? null : Number(form.price_mt),
+        quoted_incoterms: form.quoted_incoterms || null,
+        min_order_mt: form.min_order_mt === "" ? null : Number(form.min_order_mt),
+        lead_time_days:
+          form.lead_time_days === "" ? null : Number(form.lead_time_days),
+        payment_terms: form.payment_terms || null,
+        credibility_score: form.credibility_score,
+        responsiveness_score: form.responsiveness_score,
+        negotiation_stage: form.negotiation_stage,
+        notes: form.notes || null,
+      };
+      await api.updateSupplierLead(opportunityId, lead.id, payload);
+      onChange();
+      onClose();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function composeStageEmail() {
+    setComposing(true);
+    setErr(null);
+    try {
+      const doc = await api.generateDocument({
+        type:
+          lead.negotiation_stage === 1 ? "outreach_email" : "follow_up_email",
+        opportunity_id: opportunityId,
+        supplier_lead_id: lead.id,
+      });
+      router.push(`/documents/${doc.id}`);
+    } catch (e) {
+      setErr((e as Error).message);
+      setComposing(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+        <LabeledInput
+          label="Price $/MT"
+          type="number"
+          value={form.price_mt}
+          onChange={(v) =>
+            setForm({ ...form, price_mt: v === "" ? "" : Number(v) })
+          }
+        />
+        <LabeledInput
+          label="Incoterms"
+          value={form.quoted_incoterms}
+          onChange={(v) => setForm({ ...form, quoted_incoterms: String(v) })}
+          placeholder="FOB, CFR, …"
+        />
+        <LabeledInput
+          label="MOQ (MT)"
+          type="number"
+          value={form.min_order_mt}
+          onChange={(v) =>
+            setForm({ ...form, min_order_mt: v === "" ? "" : Number(v) })
+          }
+        />
+        <LabeledInput
+          label="Lead time (days)"
+          type="number"
+          value={form.lead_time_days}
+          onChange={(v) =>
+            setForm({ ...form, lead_time_days: v === "" ? "" : Number(v) })
+          }
+        />
+        <LabeledInput
+          label="Payment terms"
+          value={form.payment_terms}
+          onChange={(v) => setForm({ ...form, payment_terms: String(v) })}
+          placeholder="DLC 30d, SBLC, …"
+        />
+        <LabeledInput
+          label="Credibility (0-100)"
+          type="number"
+          value={form.credibility_score}
+          onChange={(v) =>
+            setForm({ ...form, credibility_score: Number(v) || 0 })
+          }
+        />
+        <LabeledInput
+          label="Responsiveness (0-100)"
+          type="number"
+          value={form.responsiveness_score}
+          onChange={(v) =>
+            setForm({ ...form, responsiveness_score: Number(v) || 0 })
+          }
+        />
+        <div className="flex flex-col">
+          <label className="mb-0.5 text-[10px] uppercase tracking-wide text-gray-500">
+            Negotiation stage
+          </label>
+          <select
+            className="input text-xs"
+            value={form.negotiation_stage}
+            onChange={(e) =>
+              setForm({ ...form, negotiation_stage: Number(e.target.value) })
+            }
+          >
+            {[1, 2, 3, 4, 5].map((s) => (
+              <option key={s} value={s}>
+                {s}/5 · {NEGOTIATION_STAGE_LABELS[s]}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+      <div>
+        <label className="mb-0.5 block text-[10px] uppercase tracking-wide text-gray-500">
+          Notes
+        </label>
+        <textarea
+          className="input w-full text-xs"
+          rows={2}
+          value={form.notes}
+          onChange={(e) => setForm({ ...form, notes: e.target.value })}
+          placeholder="What they quoted, what they asked, what to push on next…"
+        />
+      </div>
+
+      <AuditPanel intel={lead.intel} disclosed={lead.disclosed} />
+
+      {err && <div className="text-xs text-red-400">{err}</div>}
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          className="btn-primary text-xs"
+          onClick={save}
+          disabled={saving}
         >
-          {SUP_STATUSES.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
-      </td>
-      <td className="text-gray-400">
-        <div>
-          {lead.last_contacted_at
-            ? new Date(lead.last_contacted_at).toLocaleDateString()
-            : "—"}
-        </div>
-        <div className="mt-0.5 flex gap-2 text-[11px]">
-          <button className="text-accent hover:underline" onClick={markContacted}>
-            log contact
-          </button>
-          <button className="text-red-400 hover:underline" onClick={remove}>
-            remove
-          </button>
-        </div>
-      </td>
-    </tr>
+          {saving ? "Saving…" : "Save changes"}
+        </button>
+        <button
+          className="btn-ghost text-xs"
+          onClick={composeStageEmail}
+          disabled={composing}
+          title="Generate a stage-aware email (price rules baked in)"
+        >
+          {composing
+            ? "Drafting…"
+            : `Compose stage-${lead.negotiation_stage} email`}
+        </button>
+        <button className="btn-ghost text-xs" onClick={onClose}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function LabeledInput({
+  label,
+  value,
+  onChange,
+  type = "text",
+  placeholder,
+}: {
+  label: string;
+  value: string | number | "" | null;
+  onChange: (v: string | number | "") => void;
+  type?: "text" | "number";
+  placeholder?: string;
+}) {
+  return (
+    <div className="flex flex-col">
+      <label className="mb-0.5 text-[10px] uppercase tracking-wide text-gray-500">
+        {label}
+      </label>
+      <input
+        className="input text-xs"
+        type={type}
+        value={value == null ? "" : value}
+        placeholder={placeholder}
+        onChange={(e) => {
+          const v = e.target.value;
+          if (type === "number") {
+            onChange(v === "" ? "" : Number(v));
+          } else {
+            onChange(v);
+          }
+        }}
+      />
+    </div>
   );
 }
 
@@ -512,11 +862,13 @@ function BuyerPanel({
         <thead className="text-left text-gray-500">
           <tr>
             <th className="pb-1.5 font-medium">Name / country</th>
+            <th className="font-medium">Stage</th>
             <th className="font-medium">Target</th>
             <th className="font-medium">Appetite</th>
             <th className="font-medium">Urgency</th>
             <th className="font-medium">Status</th>
             <th className="font-medium">Last contact</th>
+            <th className="font-medium" />
           </tr>
         </thead>
         <tbody>
@@ -530,7 +882,7 @@ function BuyerPanel({
           ))}
           {buyerLeads.length === 0 && (
             <tr>
-              <td colSpan={6} className="py-6 text-center text-gray-500">
+              <td colSpan={8} className="py-6 text-center text-gray-500">
                 No buyer leads yet.
               </td>
             </tr>
@@ -550,6 +902,7 @@ function BuyerRow({
   lead: BuyerLead;
   onChange: () => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
   async function updateStatus(status: string) {
     await api.updateBuyerLead(opportunityId, lead.id, { status });
     onChange();
@@ -567,47 +920,282 @@ function BuyerRow({
     onChange();
   }
   return (
-    <tr className="row">
-      <td className="py-1.5">
-        <div className="text-gray-200">{lead.buyer_name || "—"}</div>
-        <div className="text-[11px] text-gray-500">{lead.country || "—"}</div>
-      </td>
-      <td className="text-gray-300">
-        {lead.target_price_mt != null
-          ? `$${lead.target_price_mt.toFixed(0)}`
-          : "—"}
-      </td>
-      <td className="text-gray-300 capitalize">{lead.appetite}</td>
-      <td className="text-gray-300 capitalize">{lead.urgency}</td>
-      <td>
-        <select
-          className="input text-xs"
-          value={lead.status}
-          onChange={(e) => updateStatus(e.target.value)}
-        >
-          {BUY_STATUSES.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
-      </td>
-      <td className="text-gray-400">
-        <div>
-          {lead.last_contacted_at
-            ? new Date(lead.last_contacted_at).toLocaleDateString()
+    <>
+      <tr className="row">
+        <td className="py-1.5">
+          <div className="text-gray-200">{lead.buyer_name || "—"}</div>
+          <div className="text-[11px] text-gray-500">{lead.country || "—"}</div>
+        </td>
+        <td>
+          <StageBadge stage={lead.negotiation_stage} />
+        </td>
+        <td className="text-gray-300">
+          {lead.target_price_mt != null
+            ? `$${lead.target_price_mt.toFixed(0)}`
             : "—"}
-        </div>
-        <div className="mt-0.5 flex gap-2 text-[11px]">
-          <button className="text-accent hover:underline" onClick={markContacted}>
-            log contact
+        </td>
+        <td className="text-gray-300 capitalize">{lead.appetite}</td>
+        <td className="text-gray-300 capitalize">{lead.urgency}</td>
+        <td>
+          <select
+            className="input text-xs"
+            value={lead.status}
+            onChange={(e) => updateStatus(e.target.value)}
+          >
+            {BUY_STATUSES.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        </td>
+        <td className="text-gray-400">
+          <div>
+            {lead.last_contacted_at
+              ? new Date(lead.last_contacted_at).toLocaleDateString()
+              : "—"}
+          </div>
+          <div className="mt-0.5 flex gap-2 text-[11px]">
+            <button
+              className="text-accent hover:underline"
+              onClick={markContacted}
+            >
+              log contact
+            </button>
+            <button className="text-red-400 hover:underline" onClick={remove}>
+              remove
+            </button>
+          </div>
+        </td>
+        <td className="text-right">
+          <button
+            className="btn-ghost text-[11px]"
+            onClick={() => setExpanded((v) => !v)}
+            title={expanded ? "Collapse" : "Edit details + audit"}
+          >
+            {expanded ? "close" : "edit"}
           </button>
-          <button className="text-red-400 hover:underline" onClick={remove}>
-            remove
-          </button>
+        </td>
+      </tr>
+      {expanded && (
+        <tr>
+          <td colSpan={8} className="bg-black/20 px-3 py-3">
+            <BuyerLeadEditor
+              opportunityId={opportunityId}
+              lead={lead}
+              onChange={onChange}
+              onClose={() => setExpanded(false)}
+            />
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function BuyerLeadEditor({
+  opportunityId,
+  lead,
+  onChange,
+  onClose,
+}: {
+  opportunityId: number;
+  lead: BuyerLead;
+  onChange: () => void;
+  onClose: () => void;
+}) {
+  const router = useRouter();
+  const [form, setForm] = useState<{
+    target_price_mt: number | "";
+    volume_mt: number | "";
+    appetite: "low" | "medium" | "high";
+    urgency: "low" | "medium" | "high";
+    negotiation_stage: number;
+    feedback: string;
+    notes: string;
+  }>({
+    target_price_mt: lead.target_price_mt ?? "",
+    volume_mt: lead.volume_mt ?? "",
+    appetite: lead.appetite,
+    urgency: lead.urgency,
+    negotiation_stage: lead.negotiation_stage,
+    feedback: lead.feedback ?? "",
+    notes: lead.notes ?? "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [composing, setComposing] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function save() {
+    setSaving(true);
+    setErr(null);
+    try {
+      const payload: BuyerLeadInput = {
+        target_price_mt:
+          form.target_price_mt === "" ? null : Number(form.target_price_mt),
+        volume_mt: form.volume_mt === "" ? null : Number(form.volume_mt),
+        appetite: form.appetite,
+        urgency: form.urgency,
+        negotiation_stage: form.negotiation_stage,
+        feedback: form.feedback || null,
+        notes: form.notes || null,
+      };
+      await api.updateBuyerLead(opportunityId, lead.id, payload);
+      onChange();
+      onClose();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function composeStageEmail() {
+    setComposing(true);
+    setErr(null);
+    try {
+      const doc = await api.generateDocument({
+        type:
+          lead.negotiation_stage === 1 ? "outreach_email" : "follow_up_email",
+        opportunity_id: opportunityId,
+        buyer_lead_id: lead.id,
+      });
+      router.push(`/documents/${doc.id}`);
+    } catch (e) {
+      setErr((e as Error).message);
+      setComposing(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+        <LabeledInput
+          label="Target $/MT"
+          type="number"
+          value={form.target_price_mt}
+          onChange={(v) =>
+            setForm({
+              ...form,
+              target_price_mt: v === "" ? "" : Number(v),
+            })
+          }
+        />
+        <LabeledInput
+          label="Volume (MT)"
+          type="number"
+          value={form.volume_mt}
+          onChange={(v) =>
+            setForm({ ...form, volume_mt: v === "" ? "" : Number(v) })
+          }
+        />
+        <div className="flex flex-col">
+          <label className="mb-0.5 text-[10px] uppercase tracking-wide text-gray-500">
+            Appetite
+          </label>
+          <select
+            className="input text-xs"
+            value={form.appetite}
+            onChange={(e) =>
+              setForm({
+                ...form,
+                appetite: e.target.value as "low" | "medium" | "high",
+              })
+            }
+          >
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+          </select>
         </div>
-      </td>
-    </tr>
+        <div className="flex flex-col">
+          <label className="mb-0.5 text-[10px] uppercase tracking-wide text-gray-500">
+            Urgency
+          </label>
+          <select
+            className="input text-xs"
+            value={form.urgency}
+            onChange={(e) =>
+              setForm({
+                ...form,
+                urgency: e.target.value as "low" | "medium" | "high",
+              })
+            }
+          >
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+          </select>
+        </div>
+        <div className="flex flex-col md:col-span-2">
+          <label className="mb-0.5 text-[10px] uppercase tracking-wide text-gray-500">
+            Negotiation stage
+          </label>
+          <select
+            className="input text-xs"
+            value={form.negotiation_stage}
+            onChange={(e) =>
+              setForm({ ...form, negotiation_stage: Number(e.target.value) })
+            }
+          >
+            {[1, 2, 3, 4, 5].map((s) => (
+              <option key={s} value={s}>
+                {s}/5 · {NEGOTIATION_STAGE_LABELS[s]}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+      <div>
+        <label className="mb-0.5 block text-[10px] uppercase tracking-wide text-gray-500">
+          Feedback
+        </label>
+        <textarea
+          className="input w-full text-xs"
+          rows={2}
+          value={form.feedback}
+          onChange={(e) => setForm({ ...form, feedback: e.target.value })}
+          placeholder="What the buyer said on the last call or email…"
+        />
+      </div>
+      <div>
+        <label className="mb-0.5 block text-[10px] uppercase tracking-wide text-gray-500">
+          Notes
+        </label>
+        <textarea
+          className="input w-full text-xs"
+          rows={2}
+          value={form.notes}
+          onChange={(e) => setForm({ ...form, notes: e.target.value })}
+        />
+      </div>
+
+      <AuditPanel intel={lead.intel} disclosed={lead.disclosed} />
+
+      {err && <div className="text-xs text-red-400">{err}</div>}
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          className="btn-primary text-xs"
+          onClick={save}
+          disabled={saving}
+        >
+          {saving ? "Saving…" : "Save changes"}
+        </button>
+        <button
+          className="btn-ghost text-xs"
+          onClick={composeStageEmail}
+          disabled={composing}
+          title="Generate a stage-aware email (price rules baked in)"
+        >
+          {composing
+            ? "Drafting…"
+            : `Compose stage-${lead.negotiation_stage} email`}
+        </button>
+        <button className="btn-ghost text-xs" onClick={onClose}>
+          Cancel
+        </button>
+      </div>
+    </div>
   );
 }
 

@@ -3,11 +3,17 @@ from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai.negotiation_strategy import (
+    NegotiationContext,
+    NegotiationStage,
+    build_disclosure_guidance,
+)
 from app.core.db import get_db
 from app.core.deps import get_current_user
 from app.integrations.yahoo_finance import get_price
 from app.models.deal import Deal
 from app.models.document import Document
+from app.models.opportunity import BuyerLead, Opportunity, SupplierLead
 from app.models.supplier import Supplier
 from app.models.user import User
 from app.schemas.document import DocumentGenerateRequest, DocumentOut, DocumentUpdate
@@ -53,6 +59,21 @@ async def generate_document(
     )
 
     supplier_id = payload.supplier_id
+
+    # Resolve opportunity + lead context so we can auto-inject the negotiation
+    # block for stage-aware emails. This is best-effort — if any of the ids are
+    # missing or invalid we just skip the block and the LLM falls back to the
+    # default stage-1 rules encoded in the prompt.
+    opportunity: Opportunity | None = None
+    supplier_lead: SupplierLead | None = None
+    buyer_lead: BuyerLead | None = None
+    if payload.opportunity_id:
+        opportunity = await db.get(Opportunity, payload.opportunity_id)
+    if payload.supplier_lead_id:
+        supplier_lead = await db.get(SupplierLead, payload.supplier_lead_id)
+    if payload.buyer_lead_id:
+        buyer_lead = await db.get(BuyerLead, payload.buyer_lead_id)
+
     if payload.deal_id:
         deal = await db.get(Deal, payload.deal_id)
         if not deal:
@@ -90,14 +111,49 @@ async def generate_document(
                 "type": supplier.type,
             },
         )
+    elif supplier_lead is not None and "supplier" not in inputs:
+        # Fallback: build a `supplier` block from the SupplierLead's inline
+        # fields so stage-aware emails work even for leads that were never
+        # promoted to a full Supplier counterparty record.
+        opp_commodity = opportunity.commodity if opportunity else None
+        inputs["supplier"] = {
+            "name": supplier_lead.supplier_name,
+            "country": supplier_lead.country,
+            "commodity": opp_commodity,
+            "email": supplier_lead.email,
+            "website": None,
+            "type": None,
+        }
 
-    # For counter-offer emails, auto-inject the live futures reference so the LLM has a
-    # transparent anchor to justify the counter against. Best-effort — if the feed is down
-    # we omit the block rather than fail the document generation.
-    if payload.type == "counter_offer_email" and "market_reference" not in inputs:
+    # For outreach-family emails, derive the `negotiation` block from the
+    # referenced lead so the LLM has the explicit disclosure matrix to obey.
+    if payload.type in {"outreach_email", "counter_offer_email", "follow_up_email"}:
+        active_lead = supplier_lead or buyer_lead
+        if active_lead is not None and "negotiation" not in inputs:
+            stage = NegotiationStage(max(1, min(5, active_lead.negotiation_stage or 1)))
+            ctx = NegotiationContext(
+                stage=stage,
+                side="supplier" if supplier_lead is not None else "buyer",
+                intel=dict(active_lead.intel or {}),
+                disclosed=dict(active_lead.disclosed or {}),
+                market_reference=inputs.get("market_reference"),
+                supplier_quote=inputs.get("supplier_quote"),
+                last_supplier_response=inputs.get("last_supplier_response"),
+            )
+            inputs["negotiation"] = build_disclosure_guidance(ctx)
+
+    # For counter-offer / stage-3 follow-up emails, auto-inject the live futures reference
+    # so the LLM has a transparent anchor to justify the counter against. Best-effort — if
+    # the feed is down we omit the block rather than fail the document generation.
+    needs_market_ref = payload.type == "counter_offer_email" or (
+        payload.type == "follow_up_email"
+        and (inputs.get("negotiation") or {}).get("stage") == 3
+    )
+    if needs_market_ref and "market_reference" not in inputs:
         commodity_hint = (
             (inputs.get("supplier") or {}).get("commodity")
             or (inputs.get("deal") or {}).get("commodity")
+            or (opportunity.commodity if opportunity else None)
         )
         if commodity_hint:
             try:
@@ -115,6 +171,12 @@ async def generate_document(
                     "source": quote.source,
                     "timestamp": quote.timestamp,
                 }
+                # Re-surface the market_reference into the negotiation block so
+                # the LLM sees it via the disclosure-guidance section too.
+                if isinstance(inputs.get("negotiation"), dict):
+                    inputs["negotiation"]["market_reference"] = inputs[
+                        "market_reference"
+                    ]
 
     service = DocumentGenerationService()
     title, content = await service.generate(payload.type, inputs)

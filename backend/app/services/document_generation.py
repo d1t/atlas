@@ -18,10 +18,35 @@ _INPUT_GUIDE = (
     "`sender` (the writer: full_name, company_name, title, email, phone), "
     "`supplier` (recipient: name, country, commodity, email, website, type), "
     "`deal` (title, commodity, volume_mt, buy_price, sell_price, freight_estimate, "
-    "incoterms, currency, structure). Always use sender.full_name and sender.company_name "
+    "incoterms, currency, structure), "
+    "and a `negotiation` block ({stage, stage_label, side, reveal, ask, hold, tactics, "
+    "known_intel, previously_disclosed, market_reference, supplier_quote, "
+    "last_supplier_response}) that encodes the game-theory state of the "
+    "relationship — see :mod:`app.ai.negotiation_strategy`. "
+    "Always use sender.full_name and sender.company_name "
     "in the signature and greeting — never use placeholders like '[Your Name]' or 'Atlas'. "
     "Address the supplier by supplier.name. Reference the actual commodity from "
     "supplier.commodity or deal.commodity, never 'the specified commodity'."
+)
+
+_NEGOTIATION_RULES = (
+    "NEGOTIATION STATE (hard constraints — non-negotiable): "
+    "If inputs include a `negotiation` block, you MUST: "
+    "(a) mention facts ONLY from negotiation.reveal (plus generic courtesy/signature); "
+    "(b) NEVER mention any fact listed in negotiation.hold — these are leverage we are "
+    "deliberately withholding; leaking one of them weakens the user's position; "
+    "(c) include AT LEAST THREE explicit questions drawn from negotiation.ask, phrased "
+    "as real questions (ending with '?') so the supplier must reply with data; "
+    "(d) apply the tactics listed in negotiation.tactics — BATNA framing (hint at "
+    "alternatives without bluffing), credible deadlines tied to an external event, "
+    "anchoring discipline (never quote a price unless negotiation.stage >= 3), "
+    "commitment escalation (ask for SCO / NCNDA / bank ref proportional to stage), "
+    "and at least one non-price lever the counterparty can pull to defend margin; "
+    "(e) if negotiation.previously_disclosed is non-empty, do not repeat those facts "
+    "as if revealing them for the first time — reference them briefly or not at all; "
+    "(f) if negotiation.known_intel contains their last quoted price/incoterms/MOQ, "
+    "use them for targeting but DO NOT state them back as numbers we 'know' — this "
+    "breaks information asymmetry."
 )
 
 DOC_SYSTEMS = {
@@ -30,7 +55,8 @@ DOC_SYSTEMS = {
         "supplier. This is the FIRST message — the goal is to earn a reply, not to close "
         "a deal. "
         f"{_INPUT_GUIDE} "
-        "NEGOTIATION RULES (non-negotiable): "
+        f"{_NEGOTIATION_RULES} "
+        "STAGE-1 RULES (non-negotiable): "
         "(1) Do NOT quote any offer price, target price, bid price, or total deal value. "
         "Never invent a USD/MT or USD/lb number. Pricing is decided after the supplier "
         "responds — leading with a price weakens the buyer's position. "
@@ -62,7 +88,8 @@ DOC_SYSTEMS = {
         "Additional context: inputs may include `market_reference` "
         "(exchange, ticker, price in USD/MT, source) and `supplier_quote` "
         "(supplier's offered price in USD/MT, incoterms, payment terms). "
-        "NEGOTIATION RULES: "
+        f"{_NEGOTIATION_RULES} "
+        "STAGE-3 RULES: "
         "(1) This IS the email where a price appears — but it must be JUSTIFIED, not a "
         "random lowball. If market_reference is provided, explicitly anchor the counter "
         "to that futures price plus a transparent basis: 'based on ICE SB=F at "
@@ -82,6 +109,36 @@ DOC_SYSTEMS = {
         "counter-counter with specs the supplier can improve (tonnage upsize, tenor, "
         "ICUMSA grade). "
         "Under 200 words. Plain text. Sign off as in the outreach email."
+    ),
+    "follow_up_email": (
+        "You are a senior commodity trader writing a STAGE-AWARE follow-up email to a "
+        "supplier (or buyer) who has already responded to you. The negotiation block in "
+        "the inputs tells you exactly what stage you are at (2-5) and what to do. "
+        f"{_INPUT_GUIDE} "
+        f"{_NEGOTIATION_RULES} "
+        "Additional inputs for this doc type: `last_supplier_response` (the text of "
+        "their most recent reply — read it carefully and address THEIR points, do not "
+        "send a generic template). "
+        "STAGE-SPECIFIC RULES: "
+        "Stage 2 (first-response): acknowledge the SCO / indicative quote; ask for a "
+        "FULL SCO on letterhead, payment-term RANGE, inspection-agency preference, and "
+        "origination cycle; do NOT quote a price yourself; escalate to NCNDA signing. "
+        "Stage 3 (counter-offer): this is the ONLY follow-up that states a price; anchor "
+        "to market_reference + transparent basis (see counter_offer_email rules); give "
+        "two non-price levers (deposit / shorter LC tenor) to defend their margin; close "
+        "with concrete next-step (accept OR counter with specific terms). "
+        "Stage 4 (terms-negotiation): price is agreed; negotiate packaging, freight "
+        "split, inspection, LC format, tenor, loading window; now you may disclose "
+        "destination port and deposit percentage; ask for bank reference and draft SPA. "
+        "Stage 5 (close): all material terms settled; final disclosure is end-buyer "
+        "identity under executed NCNDA; ask for draft SPA, LC pre-advice timing, and "
+        "loading programme. "
+        "STRUCTURE: Subject line references the commodity + stage context (e.g. 'RE: "
+        "Brazil ICUMSA-45 — working level & next steps'); 1-2 sentence acknowledgement "
+        "of what they sent; THE SPECIFIC asks for this stage; a credible deadline tied "
+        "to an external event (shipment window, origination cycle, futures roll); a "
+        "BATNA-aware sign-off that signals alternatives without bluffing. Under 220 "
+        "words. Plain text. Sign off as in the outreach email."
     ),
     "spa_buyer": (
         "You are a commodity trade lawyer. Generate a complete, professional SALE AND "
@@ -128,6 +185,7 @@ DOC_SYSTEMS = {
 DOC_TITLES = {
     "outreach_email": "Supplier Outreach Email",
     "counter_offer_email": "Counter-Offer Email",
+    "follow_up_email": "Follow-Up Email",
     "spa_buyer": "Sale & Purchase Agreement (Buyer)",
     "spa_supplier": "Sale & Purchase Agreement (Supplier)",
     "ncnda": "Non-Circumvention, Non-Disclosure Agreement",

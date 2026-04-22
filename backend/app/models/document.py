@@ -6,6 +6,7 @@ from app.models.base import Base, TimestampMixin
 DOCUMENT_TYPES = [
     "outreach_email",
     "counter_offer_email",
+    "follow_up_email",
     "spa_buyer",
     "spa_supplier",
     "ncnda",
