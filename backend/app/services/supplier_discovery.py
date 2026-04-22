@@ -11,7 +11,9 @@ system works end-to-end without network access or browser drivers.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -21,8 +23,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai import get_llm
 from app.ai.llm import MockLLM
+from app.core.config import get_settings
 from app.models.supplier import Supplier
+from app.scrapers.site_crawler import SiteCrawler
 from app.scrapers.web_scraper import WebScraper
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -44,6 +50,9 @@ class SupplierDiscoveryService:
         self.db = db
         self.llm = get_llm()
         self.scraper = WebScraper()
+        settings = get_settings()
+        self._crawler = SiteCrawler() if settings.site_crawler_enabled else None
+        self._crawler_max = settings.site_crawler_max_per_discovery
 
     async def discover(
         self, commodity: str, country: str | None, limit: int = 10
@@ -62,7 +71,36 @@ class SupplierDiscoveryService:
             candidates = await self._llm_only_discovery(commodity, country, limit)
 
         candidates = await self._dedupe(candidates)
-        return candidates[:limit]
+        candidates = candidates[:limit]
+        # After dedupe, walk each supplier's website to look for a real email
+        # and phone on the contact page. Best-effort: missing values stay None.
+        await self._enrich_contacts(candidates)
+        return candidates
+
+    async def _enrich_contacts(self, candidates: list[SupplierCandidate]) -> None:
+        if not self._crawler or not candidates:
+            return
+
+        targets = [
+            c
+            for c in candidates
+            if c.website and not c.email
+        ][: self._crawler_max]
+        if not targets:
+            return
+
+        async def _one(c: SupplierCandidate) -> None:
+            try:
+                out = await self._crawler.enrich(c.website)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("site crawl failed for %s: %s", c.website, exc)
+                return
+            if out.get("email") and not c.email:
+                c.email = out["email"]
+            if out.get("phone") and not c.phone:
+                c.phone = out["phone"]
+
+        await asyncio.gather(*[_one(c) for c in targets], return_exceptions=True)
 
     def _heuristic_from_hits(
         self, hits: list[dict], commodity: str, country: str | None
@@ -93,6 +131,7 @@ class SupplierDiscoveryService:
                     "description": (h.get("snippet") or "").strip()[:400],
                     "email": None,
                     "phone": None,
+                    "source": h.get("source") or "web",
                 },
             )
             snippet = h.get("snippet") or ""
@@ -115,7 +154,7 @@ class SupplierDiscoveryService:
                 email=row["email"],
                 phone=row["phone"],
                 description=row["description"] or None,
-                source="tavily",
+                source=row["source"],
             )
             for row in by_domain.values()
         ]
