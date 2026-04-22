@@ -21,8 +21,10 @@ class Settings(BaseSettings):
     # Third-party integrations (all optional; empty string => offline fallback)
     tavily_api_key: str = ""
     tavily_max_results: int = 10
-    brave_api_key: str = ""
-    brave_max_results: int = 10
+    # DuckDuckGo HTML scraping — no key, no signup. Disable if the
+    # deployment environment blocks outbound DDG traffic.
+    ddg_search_enabled: bool = True
+    ddg_max_results: int = 10
     site_crawler_enabled: bool = True
     site_crawler_max_per_discovery: int = 8
 

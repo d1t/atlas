@@ -3,12 +3,12 @@
 Backends (all optional, layered):
 
 1. **Tavily Search API** — enabled when `TAVILY_API_KEY` is set.
-2. **Brave Search API** — enabled when `BRAVE_API_KEY` is set. Runs
+2. **DuckDuckGo HTML** — enabled by default (no key, no signup). Runs
    alongside Tavily and the two result sets are merged (deduped by
    URL); this broadens coverage and reduces dependence on one vendor.
-3. **Mock / empty** — default when no key is set. Returns `[]`, which
-   causes `SupplierDiscoveryService` to fall back to the offline
-   LLM-only synthesis path so the system stays usable without keys.
+3. **Mock / empty** — both disabled. Returns `[]`, which causes
+   `SupplierDiscoveryService` to fall back to the offline LLM-only
+   synthesis path so the system stays usable without network access.
 
 A full Playwright-backed scraper (Google SERPs, LinkedIn, trade
 directories) can drop in here in the future; the interface is the
@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from app.integrations.brave_search import BraveSearch
+from app.integrations.ddg_search import DuckDuckGoSearch
 from app.integrations.tavily import TavilySearch
 
 logger = logging.getLogger(__name__)
@@ -28,15 +28,15 @@ logger = logging.getLogger(__name__)
 class WebScraper:
     def __init__(self) -> None:
         self._tavily = TavilySearch()
-        self._brave = BraveSearch()
+        self._ddg = DuckDuckGoSearch()
 
     @property
     def backend(self) -> str:
         backends = []
         if self._tavily.enabled:
             backends.append("tavily")
-        if self._brave.enabled:
-            backends.append("brave")
+        if self._ddg.enabled:
+            backends.append("duckduckgo")
         return "+".join(backends) if backends else "offline"
 
     async def search_suppliers(
@@ -46,12 +46,12 @@ class WebScraper:
         tasks = []
         if self._tavily.enabled:
             tasks.append(self._tavily.search_suppliers(commodity, country))
-        if self._brave.enabled:
-            tasks.append(self._brave.search_suppliers(commodity, country))
+        if self._ddg.enabled:
+            tasks.append(self._ddg.search_suppliers(commodity, country))
 
         if not tasks:
             logger.info(
-                "WebScraper offline (no TAVILY_API_KEY / BRAVE_API_KEY); "
+                "WebScraper offline (no TAVILY_API_KEY, DDG disabled); "
                 "falling back to LLM-only discovery."
             )
             return []
