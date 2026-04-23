@@ -235,3 +235,143 @@ async def test_document_endpoint_injects_negotiation_from_lead(
         db_path = tmp_path / "neg.db"
         if os.path.exists(db_path):
             os.remove(db_path)
+
+
+async def test_document_endpoint_auto_wires_supplier_quote_at_stage_3(
+    monkeypatch, tmp_path,
+):
+    """End-to-end: a stage-3 follow-up must auto-inject the SupplierLead's
+    persisted ``price_mt`` into ``negotiation.supplier_quote`` so the mock
+    counter can compute an actual $X.XX/MT anchor below the supplier quote.
+    Regression test for the PR #9 blocker where ``supplier_quote`` was never
+    populated and stage-3 emails shipped without a numeric counter.
+    """
+    import os
+    from importlib import reload
+
+    from httpx import ASGITransport, AsyncClient
+
+    monkeypatch.setenv(
+        "DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'neg3.db'}"
+    )
+    monkeypatch.setenv("LLM_PROVIDER", "mock")
+    monkeypatch.setenv("APP_SECRET_KEY", "test-secret")
+
+    import app.core.config as config_mod
+    import app.core.db as db_mod
+
+    reload(config_mod)
+    reload(db_mod)
+
+    import app.main as main_mod
+
+    reload(main_mod)
+
+    async with db_mod.engine.begin() as conn:
+        from app.models import Base
+
+        await conn.run_sync(Base.metadata.create_all)
+
+    # Stub the live-price feed so the test is deterministic and offline.
+    from app.api.v1 import documents as documents_mod
+    from app.integrations.yahoo_finance import PriceQuote
+
+    async def _fake_get_price(_commodity: str) -> PriceQuote:
+        return PriceQuote(
+            commodity="sugar",
+            display="Sugar #11",
+            ticker="SB=F",
+            exchange="ICE",
+            quoted_unit="USD/lb",
+            raw_price=0.1337,
+            price_mt=295.00,
+            currency="USD",
+            timestamp=0,
+            previous_close=None,
+            change_pct=None,
+            source="test",
+        )
+
+    monkeypatch.setattr(documents_mod, "get_price", _fake_get_price)
+
+    transport = ASGITransport(app=main_mod.app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            await c.post(
+                "/api/v1/auth/register",
+                json={
+                    "email": "n3@t.com",
+                    "password": "hunter22x",
+                    "full_name": "Neg Tester",
+                },
+            )
+            r = await c.post(
+                "/api/v1/auth/login",
+                json={"email": "n3@t.com", "password": "hunter22x"},
+            )
+            token = r.json()["access_token"]
+            h = {"Authorization": f"Bearer {token}"}
+
+            r = await c.post(
+                "/api/v1/opportunities",
+                headers=h,
+                json={
+                    "title": "Brazil sugar",
+                    "commodity": "sugar",
+                    "volume_mt": 5000,
+                    "destination": "Lagos",
+                },
+            )
+            opp_id = r.json()["id"]
+
+            r = await c.post(
+                f"/api/v1/opportunities/{opp_id}/supplier-leads",
+                headers=h,
+                json={
+                    "supplier_name": "Brasil Sugar International",
+                    "country": "Brazil",
+                    "email": "sales@brasil-sugar.example.com",
+                    "price_mt": 560.0,
+                    "quoted_incoterms": "CFR",
+                },
+            )
+            lead_id = r.json()["id"]
+
+            # Advance the lead to stage 3 (counter-offer).
+            r = await c.patch(
+                f"/api/v1/opportunities/{opp_id}/supplier-leads/{lead_id}",
+                headers=h,
+                json={"negotiation_stage": 3},
+            )
+            assert r.status_code == 200, r.text
+
+            r = await c.post(
+                "/api/v1/documents/generate",
+                headers=h,
+                json={
+                    "type": "follow_up_email",
+                    "opportunity_id": opp_id,
+                    "supplier_lead_id": lead_id,
+                },
+            )
+            assert r.status_code == 201, r.text
+            doc = r.json()
+
+            # supplier_quote must be auto-wired from the lead's price_mt.
+            quote = doc["inputs"].get("supplier_quote")
+            assert quote and quote.get("price_mt") == 560.0, doc["inputs"]
+            assert quote.get("incoterms") == "CFR"
+
+            # Stage-3 email must contain a numeric counter strictly below
+            # the supplier's $560 quote (the whole point of this PR).
+            prices = [
+                float(m)
+                for m in re.findall(r"\$([0-9]{3,4}\.[0-9]{2})", doc["content"])
+            ]
+            counters = [p for p in prices if 300 <= p < 560]
+            assert counters, f"stage-3 must emit a counter <$560: {doc['content']}"
+    finally:
+        await db_mod.engine.dispose()
+        db_path = tmp_path / "neg3.db"
+        if os.path.exists(db_path):
+            os.remove(db_path)

@@ -130,6 +130,23 @@ async def generate_document(
     if payload.type in {"outreach_email", "counter_offer_email", "follow_up_email"}:
         active_lead = supplier_lead or buyer_lead
         if active_lead is not None and "negotiation" not in inputs:
+            # Auto-inject the supplier's quoted price (and incoterms / payment)
+            # as the `supplier_quote` block so stage-3 follow-ups have a real
+            # anchor to counter against. Caller-provided `supplier_quote` in
+            # inputs wins. `intel.quoted_price_usd_mt` (manually logged from a
+            # reply) takes precedence over the lead's static `price_mt`.
+            if supplier_lead is not None and "supplier_quote" not in inputs:
+                intel = dict(supplier_lead.intel or {})
+                quoted_price = intel.get("quoted_price_usd_mt") or supplier_lead.price_mt
+                if quoted_price:
+                    inputs["supplier_quote"] = {
+                        "price_mt": quoted_price,
+                        "incoterms": supplier_lead.quoted_incoterms,
+                        "payment_terms": supplier_lead.payment_terms,
+                        "min_order_mt": supplier_lead.min_order_mt,
+                        "lead_time_days": supplier_lead.lead_time_days,
+                    }
+
             stage = NegotiationStage(max(1, min(5, active_lead.negotiation_stage or 1)))
             ctx = NegotiationContext(
                 stage=stage,
