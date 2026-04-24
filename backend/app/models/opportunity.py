@@ -9,7 +9,7 @@ the user can manage multiple candidate suppliers and buyers per trade idea.
 """
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -121,6 +121,16 @@ class SupplierLead(Base, TimestampMixin):
     )
     notes: Mapped[str | None] = mapped_column(Text)
 
+    # Negotiation strategy state. ``negotiation_stage`` is the 1-5 bargaining
+    # stage from :mod:`app.ai.negotiation_strategy`. ``intel`` is a running
+    # dossier of what we've learned about this counterparty (their claimed
+    # origin, last quoted price, accepted payment instruments, etc.), and
+    # ``disclosed`` is the audit trail of what we've told them — both are
+    # free-form JSON so we can add signals without migrations.
+    negotiation_stage: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    intel: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    disclosed: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+
 
 class BuyerLead(Base, TimestampMixin):
     """One candidate buyer attached to an opportunity."""
@@ -156,3 +166,8 @@ class BuyerLead(Base, TimestampMixin):
         String(32), default="new", index=True, nullable=False
     )
     notes: Mapped[str | None] = mapped_column(Text)
+
+    # Mirrors of SupplierLead negotiation state. See that model for semantics.
+    negotiation_stage: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    intel: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    disclosed: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)

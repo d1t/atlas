@@ -86,10 +86,7 @@ class DuckDuckGoSearch:
             logger.warning("DDG search failed: %s", exc)
             return []
 
-        # DDG returns 202 as a soft rate-limit signal (served but with a
-        # captcha/interstitial body), plus the usual 4xx/5xx. Treat all
-        # of them as "drop silently, let other providers cover us".
-        if resp.status_code >= 400 or resp.status_code == 202 or not resp.text:
+        if resp.status_code >= 400 or not resp.text:
             logger.info("DDG returned status %s", resp.status_code)
             return []
 

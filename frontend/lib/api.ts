@@ -271,6 +271,9 @@ export const api = {
     type: string;
     deal_id?: number;
     supplier_id?: number;
+    opportunity_id?: number;
+    supplier_lead_id?: number;
+    buyer_lead_id?: number;
     inputs?: Record<string, unknown>;
   }) =>
     request<Document>("/api/v1/documents/generate", {
@@ -319,7 +322,7 @@ export const api = {
   updateSupplierLead: (
     opportunityId: number,
     leadId: number,
-    payload: Partial<SupplierLeadInput> & { status?: string; last_contacted_at?: string },
+    payload: Partial<SupplierLeadInput>,
   ) =>
     request<SupplierLead>(
       `/api/v1/opportunities/${opportunityId}/supplier-leads/${leadId}`,
@@ -338,7 +341,7 @@ export const api = {
   updateBuyerLead: (
     opportunityId: number,
     leadId: number,
-    payload: Partial<BuyerLeadInput> & { status?: string; last_contacted_at?: string },
+    payload: Partial<BuyerLeadInput>,
   ) =>
     request<BuyerLead>(
       `/api/v1/opportunities/${opportunityId}/buyer-leads/${leadId}`,
@@ -447,6 +450,11 @@ export type SupplierLeadInput = {
   credibility_score?: number;
   responsiveness_score?: number;
   notes?: string | null;
+  status?: string;
+  last_contacted_at?: string | null;
+  negotiation_stage?: number;
+  intel?: Record<string, unknown>;
+  disclosed?: Record<string, unknown>;
 };
 
 export type SupplierLead = Required<
@@ -468,6 +476,9 @@ export type SupplierLead = Required<
   lead_time_days: number | null;
   payment_terms: string | null;
   notes: string | null;
+  negotiation_stage: number;
+  intel: Record<string, unknown>;
+  disclosed: Record<string, unknown>;
 };
 
 export type BuyerLeadInput = {
@@ -481,6 +492,11 @@ export type BuyerLeadInput = {
   urgency?: "low" | "medium" | "high";
   feedback?: string | null;
   notes?: string | null;
+  status?: string;
+  last_contacted_at?: string | null;
+  negotiation_stage?: number;
+  intel?: Record<string, unknown>;
+  disclosed?: Record<string, unknown>;
 };
 
 export type BuyerLead = {
@@ -500,6 +516,17 @@ export type BuyerLead = {
   urgency: "low" | "medium" | "high";
   feedback: string | null;
   notes: string | null;
+  negotiation_stage: number;
+  intel: Record<string, unknown>;
+  disclosed: Record<string, unknown>;
+};
+
+export const NEGOTIATION_STAGE_LABELS: Record<number, string> = {
+  1: "Cold outreach",
+  2: "First response / SCO",
+  3: "Counter-offer",
+  4: "Terms negotiation",
+  5: "Close / SPA",
 };
 
 export type MatchPair = {

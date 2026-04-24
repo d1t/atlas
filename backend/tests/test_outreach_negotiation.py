@@ -72,7 +72,11 @@ async def test_outreach_email_asks_supplier_to_quote_first(
 
     # Must anchor on specs and signal NCNDA readiness
     assert "ncnda" in low
-    assert str(_BASE_INPUTS["deal"]["volume_mt"]) in content or "5,000" in content
+    # Asks must be phrased as REAL questions (≥3 '?' chars) so the supplier
+    # is forced to reply.
+    assert content.count("?") >= 3, (
+        f"outreach asks should be phrased as questions; got {content.count('?')} '?'"
+    )
 
 
 async def test_outreach_email_uses_real_sender_and_supplier_names(
@@ -85,6 +89,120 @@ async def test_outreach_email_uses_real_sender_and_supplier_names(
     assert "[Your Name]" not in content
     assert "Atlas Trade" not in content  # old hardcoded placeholder
     assert "specified commodity" not in content.lower()
+
+
+async def test_outreach_email_never_leaks_exact_volume(
+    svc: DocumentGenerationService,
+):
+    """Stage-1 game-theory rule: never disclose the exact target tonnage —
+    that anchors the supplier to the buyer's true willingness-to-buy."""
+    _, content = await svc.generate("outreach_email", _BASE_INPUTS)
+
+    # _BASE_INPUTS has volume_mt = 5000. The exact figure must not appear.
+    assert "5000" not in content, (
+        f"exact volume_mt 5000 leaked into outreach email:\n{content}"
+    )
+    assert "5,000 MT" not in content, (
+        f"exact volume_mt 5,000 MT leaked into outreach email:\n{content}"
+    )
+
+    # Recurring-deal language is forbidden — single-deal framing only.
+    low = content.lower()
+    for banned in [
+        "12-month rolling",
+        "monthly programme",
+        "annual offtake",
+        "rolling contract",
+        "mt/month",
+    ]:
+        assert banned not in low, (
+            f"recurring-deal language leaked into outreach: {banned!r}"
+        )
+
+
+async def test_outreach_email_uses_band_and_region_when_disclosure_present(
+    svc: DocumentGenerationService,
+):
+    """When the API has injected `opportunity_disclosure`, the email should
+    use the band and region verbatim instead of the raw tonnage / port."""
+    inputs = {
+        **_BASE_INPUTS,
+        "opportunity_disclosure": {
+            "stage": 1,
+            "commodity": "sugar",
+            "volume_disclosure": "vessel-scale parcel (25,000-55,000 MT exploratory)",
+            "geo_disclosure": "West Africa",
+            "single_deal": True,
+            "evaluating_origins": True,
+            "hold": [
+                "our exact target tonnage",
+                "the destination port",
+            ],
+        },
+    }
+    _, content = await svc.generate("outreach_email", inputs)
+
+    # Band + region must appear verbatim.
+    assert "vessel-scale parcel (25,000-55,000 MT exploratory)" in content
+    assert "West Africa" in content
+
+    # Exact tonnage must not. (5000 from deal.volume_mt; Lagos as a stand-in
+    # for any specific port.)
+    assert "5000 MT" not in content
+    assert "Lagos" not in content
+
+
+async def test_outreach_email_emits_multi_origin_batna(
+    svc: DocumentGenerationService,
+):
+    """When evaluating_origins is true, the email should signal multi-origin
+    evaluation (honest BATNA framing)."""
+    inputs = {
+        **_BASE_INPUTS,
+        "opportunity_disclosure": {
+            "stage": 1,
+            "commodity": "sugar",
+            "volume_disclosure": "vessel-scale parcel (exploratory)",
+            "geo_disclosure": "West Africa",
+            "single_deal": True,
+            "evaluating_origins": True,
+            "hold": [],
+        },
+    }
+    _, content = await svc.generate("outreach_email", inputs)
+    low = content.lower()
+    assert "origin" in low and (
+        "evaluat" in low or "compar" in low
+    ), f"missing multi-origin BATNA clause:\n{content}"
+
+
+async def test_outreach_email_omits_company_when_unknown(
+    svc: DocumentGenerationService,
+):
+    """When sender.company_name is empty, the email should NOT emit a
+    placeholder like '(your company — set it in Profile)' or '[Your Company]'."""
+    inputs = {
+        **_BASE_INPUTS,
+        "sender": {
+            **_BASE_INPUTS["sender"],
+            "company_name": "",
+        },
+    }
+    _, content = await svc.generate("outreach_email", inputs)
+
+    forbidden = [
+        "(your company",
+        "set it in Profile",
+        "[Your Company]",
+        "[Your Name]",
+        "[Destination Country]",
+        "[Specify time]",
+    ]
+    for token in forbidden:
+        assert token not in content, (
+            f"placeholder {token!r} leaked into outreach when company_name is "
+            f"empty:\n{content}"
+        )
 
 
 async def test_counter_offer_anchors_to_market_reference(

@@ -49,6 +49,11 @@ class MockLLM(LLMClient):
         # email system prompts themselves reference other doc types (e.g. "execute an
         # NCNDA on interest", "draft SPA within 48 hours") which would otherwise hijack
         # the routing and return the wrong mock.
+        # Match follow-up BEFORE counter-offer / cold-outreach because those
+        # prompts reference counter-offer / outreach rules verbatim (for the
+        # stage-3 anchoring guidance) and would otherwise steal the routing.
+        if "follow_up_email" in prompt or "stage-aware follow-up" in prompt:
+            return _mock_follow_up(user)
         if "counter-offer" in prompt or "counter_offer" in prompt or "counter offer" in prompt:
             return _mock_counter_offer(user)
         if (
@@ -229,67 +234,106 @@ def _mock_classification(user: str) -> dict:
 def _mock_outreach(user: str) -> str:
     """Cold outreach. Deliberately contains NO offer price — rule #1 of negotiation
     is 'don't anchor yourself against yourself'. We ask the supplier to quote first.
+
+    Stage-1 disclosure rules (mirrors ``document_generation.DOC_SYSTEMS["outreach_email"]``):
+
+    * NEVER emit the exact target tonnage; use opportunity_disclosure.volume_disclosure
+      (a band) verbatim, or "vessel-scale parcel (exploratory)" when missing.
+    * NEVER name a destination port; use opportunity_disclosure.geo_disclosure (region).
+    * Frame as a SINGLE deal — no "12-month rolling" / "monthly programme" language.
+    * Honest BATNA framing: acknowledge multi-origin evaluation when applicable.
+    * Phrase asks as real questions (≥3 '?' chars) so the supplier must reply.
+    * If sender.company_name is empty, omit the company-name clause entirely
+      rather than leaking a placeholder.
     """
     ctx = _parse_inputs(user)
     sender = ctx.get("sender") or {}
     supplier = ctx.get("supplier") or {}
     deal = ctx.get("deal") or {}
+    disclosure = ctx.get("opportunity_disclosure") or {}
 
     commodity = (
         supplier.get("commodity")
         or deal.get("commodity")
+        or disclosure.get("commodity")
         or _extract(user, "commodity")
         or "the specified commodity"
     )
     supplier_name = supplier.get("name") or _extract(user, "company") or "your company"
     supplier_country = supplier.get("country") or "your region"
-    volume_mt = deal.get("volume_mt")
-    incoterms = deal.get("incoterms") or "FOB / CFR"
 
-    sender_name = sender.get("full_name") or "[Your Name]"
-    sender_company = sender.get("company_name") or "[Your Company]"
+    volume_band = (
+        disclosure.get("volume_disclosure")
+        or "vessel-scale parcel (exploratory)"
+    )
+    geo = disclosure.get("geo_disclosure") or "the destination region"
+    evaluating_origins = bool(disclosure.get("evaluating_origins", True))
+
+    sender_name = sender.get("full_name") or ""
+    sender_company = sender.get("company_name") or ""
     sender_title = sender.get("title") or "Trader"
     sender_email = sender.get("email") or ""
     sender_phone = sender.get("phone") or ""
 
-    volume_line = (
-        f"- Target volume: {int(volume_mt):,} MT/month, 12-month rolling contract"
-        if isinstance(volume_mt, (int, float)) and volume_mt > 0
-        else "- Target volume: monthly tonnage to be confirmed based on your capacity"
-    )
     spec_guidance = _default_spec_for(commodity)
 
-    signature_lines = [sender_name, f"{sender_title}, {sender_company}"]
+    # Identification clause: include the company only if we have one.
+    if sender_name and sender_company:
+        intro = (
+            f"I'm {sender_name} at {sender_company}. We structure physical "
+            f"{commodity} supply for end-buyers under bank-instrument-backed "
+            f"contracts."
+        )
+    elif sender_name:
+        intro = (
+            f"I'm {sender_name}, structuring physical {commodity} supply for "
+            f"end-buyers under bank-instrument-backed contracts."
+        )
+    else:
+        intro = (
+            f"Reaching out regarding physical {commodity} supply, structured "
+            f"under bank-instrument-backed contracts."
+        )
+
+    batna_line = (
+        "We are evaluating two origins for this enquiry this week and would "
+        "like to include you in the comparison."
+        if evaluating_origins
+        else "We would like to include you in this enquiry."
+    )
+
+    signature_lines = [sender_name] if sender_name else []
+    if sender_company:
+        signature_lines.append(f"{sender_title}, {sender_company}")
+    else:
+        signature_lines.append(sender_title)
     if sender_email:
         signature_lines.append(sender_email)
     if sender_phone:
         signature_lines.append(sender_phone)
 
-    subject_vol = (
-        f" — {int(volume_mt):,} MT/month"
-        if isinstance(volume_mt, (int, float)) and volume_mt > 0
-        else ""
-    )
-
     return (
-        f"Subject: {commodity.title()} sourcing enquiry{subject_vol}\n\n"
+        f"Subject: {commodity.title()} sourcing enquiry — {volume_band} "
+        f"to {geo}\n\n"
         f"Dear {supplier_name} team,\n\n"
-        f"I'm {sender_name} at {sender_company}. We structure physical {commodity} "
-        f"supply for end-buyers under bank-instrument-backed contracts.\n\n"
-        f"Your name came up as an established producer in {supplier_country}, and we "
-        f"would like to explore whether a supply line fits your current capacity.\n\n"
-        f"Requirements:\n"
-        f"{volume_line}\n"
+        f"{intro}\n\n"
+        f"Your name came up as an established producer in {supplier_country}. "
+        f"{batna_line}\n\n"
+        f"Single-cargo enquiry. Indicative parameters:\n"
+        f"- Volume: {volume_band}\n"
         f"{spec_guidance}\n"
-        f"- Incoterms: {incoterms} (destination port disclosed on NCNDA)\n"
-        f"- Payment: DLC at sight or SBLC, issued by top-50 bank\n"
-        f"- First shipment: earliest available window\n\n"
-        f"To progress, please share:\n"
-        f"- Your indicative FOB and CFR levels (USD/MT)\n"
-        f"- Minimum order quantity and lead time from LC confirmation\n"
-        f"- Accepted payment instruments and tenor\n\n"
-        f"We are ready to execute an NCNDA on interest, and end-buyer LOI / proof of "
-        f"funds is available on request. Happy to take a 20-minute call this week.\n\n"
+        f"- Incoterms interest: FOB and CFR (please indicate both)\n"
+        f"- Payment instrument family: DLC at sight or SBLC, top-50 bank "
+        f"(tenor on NCNDA)\n"
+        f"- Loading window: subject to your origination cycle and our "
+        f"LC issuance timing\n\n"
+        f"To progress, could you share:\n"
+        f"- Your indicative FOB and CFR levels (USD/MT) to {geo}?\n"
+        f"- Minimum order quantity and typical lead time from LC confirmation?\n"
+        f"- Accepted payment instruments and acceptable tenor?\n\n"
+        f"We are ready to execute an NCNDA on interest, and end-buyer LOI / "
+        f"proof of funds is available on request. Happy to take a 20-minute "
+        f"call this week.\n\n"
         f"Best regards,\n" + "\n".join(signature_lines) + "\n"
     )
 
@@ -377,6 +421,134 @@ def _mock_counter_offer(user: str) -> str:
         f"spec and we will re-run the math.\n\n"
         f"Best regards,\n" + "\n".join(signature_lines) + "\n"
     )
+
+
+def _mock_follow_up(user: str) -> str:
+    """Stage-aware follow-up. Reads the `negotiation` block from the injected
+    inputs and produces an email that obeys the disclosure matrix for the
+    current stage. Stage 3 is the only stage that contains a price.
+    """
+    ctx = _parse_inputs(user)
+    sender = ctx.get("sender") or {}
+    supplier = ctx.get("supplier") or {}
+    deal = ctx.get("deal") or {}
+    neg = ctx.get("negotiation") or {}
+    mkt = ctx.get("market_reference") or neg.get("market_reference") or {}
+    quote = ctx.get("supplier_quote") or {}
+
+    stage = int(neg.get("stage") or 2)
+    commodity = (
+        supplier.get("commodity")
+        or deal.get("commodity")
+        or _extract(user, "commodity")
+        or "the commodity"
+    )
+    supplier_name = supplier.get("name") or "your team"
+    sender_name = sender.get("full_name") or "[Your Name]"
+    sender_company = sender.get("company_name") or "[Your Company]"
+    sender_title = sender.get("title") or "Trader"
+    sender_email = sender.get("email") or ""
+    sender_phone = sender.get("phone") or ""
+    signature_lines = [sender_name, f"{sender_title}, {sender_company}"]
+    if sender_email:
+        signature_lines.append(sender_email)
+    if sender_phone:
+        signature_lines.append(sender_phone)
+    signature = "\n".join(signature_lines)
+
+    if stage >= 5:
+        body = (
+            f"Subject: {commodity.title()} — SPA readiness & LC pre-advice\n\n"
+            f"Dear {supplier_name},\n\n"
+            f"Thank you for confirming terms. We are ready to progress to SPA and LC "
+            f"pre-advice this week.\n\n"
+            f"Next steps:\n"
+            f"- Can you share a draft SPA on your standard template for legal review?\n"
+            f"- What is the earliest LC pre-advice date your bank can accommodate?\n"
+            f"- Please confirm the loading programme and vessel nomination window.\n\n"
+            f"Our end-buyer's NCNDA is executed and we are clear to disclose identity on "
+            f"your counter-signed copy. Target execution aligned to the current shipment "
+            f"window.\n\n"
+            f"Best regards,\n{signature}\n"
+        )
+    elif stage == 4:
+        body = (
+            f"Subject: {commodity.title()} — terms confirmation & SPA draft\n\n"
+            f"Dear {supplier_name},\n\n"
+            f"Price is workable. To move to SPA we need to settle the non-price terms "
+            f"and lock the loading window.\n\n"
+            f"Asks:\n"
+            f"- Can you confirm the final delivery window and laytime / demurrage terms?\n"
+            f"- Which packaging spec suits your line (50kg PP, 1 MT jumbo, bulk)?\n"
+            f"- Are you open to a freight-split on CFR, or holding fully on your side?\n"
+            f"- Please share a bank reference so we can align on LC format.\n\n"
+            f"On our side, we can confirm destination port and a 2% non-refundable "
+            f"performance deposit on LC issuance. Timeline is driven by LC-issuance "
+            f"cutoff this cycle.\n\n"
+            f"Best regards,\n{signature}\n"
+        )
+    elif stage == 3:
+        supplier_price = _as_float(quote.get("price_mt") or quote.get("price"))
+        market_price = _as_float(mkt.get("price_mt") or mkt.get("price"))
+        ticker = mkt.get("ticker") or "ICE futures"
+        exchange = mkt.get("exchange") or "ICE"
+        if supplier_price:
+            counter = supplier_price * 0.965
+            if market_price:
+                counter = max(counter, market_price * 1.05)
+            anchor = (
+                f"Referencing {exchange} {ticker} at ${market_price:,.2f}/MT with a "
+                f"working basis for freight and LC finance, "
+                if market_price
+                else ""
+            )
+            price_block = (
+                f"{anchor}our working level is ${counter:,.2f}/MT CFR against your "
+                f"indication."
+            )
+        else:
+            price_block = (
+                f"Anchored to {exchange} {ticker} plus a transparent freight-and-finance "
+                f"basis, we would like to see the CFR level reflect current market."
+            )
+        body = (
+            f"Subject: {commodity.title()} — working level & path to LC\n\n"
+            f"Dear {supplier_name},\n\n"
+            f"Thanks for the SCO. Specs and cycle are aligned; to move to LC stage we "
+            f"need the price to reflect current market.\n\n"
+            f"{price_block}\n\n"
+            f"To protect your margin at that level, we can offer either (a) a 2% "
+            f"non-refundable performance deposit on LC issuance, or (b) shorter DLC "
+            f"tenor (30 days instead of 60). Either improves your cost of capital.\n\n"
+            f"Questions:\n"
+            f"- Can you confirm acceptance at the working level, or counter with a "
+            f"tiered matrix against tonnage?\n"
+            f"- Shall we draft proforma invoice at agreed price for review?\n"
+            f"- Which inspection agency do you prefer — SGS, Intertek, or Cotecna?\n\n"
+            f"We are comparing two origins this cycle; happy to progress with whoever "
+            f"lands first on a workable level.\n\n"
+            f"Best regards,\n{signature}\n"
+        )
+    else:  # stage == 2
+        body = (
+            f"Subject: {commodity.title()} — next steps on your SCO\n\n"
+            f"Dear {supplier_name},\n\n"
+            f"Thank you for the indicative offer. To progress we'd like to firm up a few "
+            f"points before exchanging banking details.\n\n"
+            f"Asks:\n"
+            f"- Can you share a full SCO on letterhead covering spec, packaging, and "
+            f"loading port?\n"
+            f"- What is your acceptable payment-term RANGE (instrument and tenor)?\n"
+            f"- Which inspection agency do you prefer at load — SGS, Intertek, or "
+            f"Cotecna?\n"
+            f"- When is your next origination slot and typical cycle length?\n\n"
+            f"On our side, we are ready to counter-sign NCNDA this week and narrow the "
+            f"destination to a specific country on your confirmation. We are reviewing a "
+            f"parallel origin, so turnaround on the full SCO helps us hold the slot for "
+            f"you.\n\n"
+            f"Best regards,\n{signature}\n"
+        )
+    return body
 
 
 def _as_float(x: object) -> float | None:
