@@ -8,6 +8,7 @@ from app.ai.negotiation_strategy import (
     NegotiationStage,
     build_disclosure_guidance,
 )
+from app.ai.volume_disclosure import build_opportunity_disclosure
 from app.core.db import get_db
 from app.core.deps import get_current_user
 from app.integrations.yahoo_finance import get_price
@@ -47,11 +48,14 @@ async def generate_document(
     inputs: dict = dict(payload.inputs or {})
 
     # Current user — signer / sender. Personalises outreach emails and doc signatures.
+    # company_name is left empty when the user has not set one; the LLM prompt
+    # rules require omitting the company-name line entirely in that case rather
+    # than leaking a "(your company — set it in Profile)" placeholder.
     inputs.setdefault(
         "sender",
         {
             "full_name": user.full_name or user.email.split("@")[0],
-            "company_name": user.company_name or "(your company — set it in Profile)",
+            "company_name": user.company_name or "",
             "title": user.title or "Trader",
             "email": user.email,
             "phone": user.phone,
@@ -129,6 +133,24 @@ async def generate_document(
     # referenced lead so the LLM has the explicit disclosure matrix to obey.
     if payload.type in {"outreach_email", "counter_offer_email", "follow_up_email"}:
         active_lead = supplier_lead or buyer_lead
+
+        # Inject a stage-gated `opportunity_disclosure` block so the LLM never
+        # sees the raw target volume / destination port at stage 1. This is
+        # the structured equivalent of "tell the supplier a band, not the
+        # number" — see ``app.ai.volume_disclosure``.
+        if (
+            opportunity is not None
+            and active_lead is not None
+            and "opportunity_disclosure" not in inputs
+        ):
+            inputs["opportunity_disclosure"] = build_opportunity_disclosure(
+                stage=active_lead.negotiation_stage or 1,
+                volume_mt=opportunity.volume_mt,
+                destination_country=opportunity.destination_country,
+                destination_port=opportunity.destination_port,
+                commodity=opportunity.commodity,
+            )
+
         if active_lead is not None and "negotiation" not in inputs:
             # Auto-inject the supplier's quoted price (and incoterms / payment)
             # as the `supplier_quote` block so stage-3 follow-ups have a real
