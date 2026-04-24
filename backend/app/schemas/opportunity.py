@@ -99,6 +99,9 @@ class SupplierLeadUpdate(BaseModel):
     last_contacted_at: datetime | None = None
     status: str | None = Field(default=None, pattern=_SUP_STATUS_PATTERN)
     notes: str | None = None
+    negotiation_stage: int | None = Field(default=None, ge=1, le=5)
+    intel: dict | None = None
+    disclosed: dict | None = None
 
 
 class SupplierLeadOut(SupplierLeadBase):
@@ -110,6 +113,9 @@ class SupplierLeadOut(SupplierLeadBase):
     last_contacted_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    negotiation_stage: int = 1
+    intel: dict = {}
+    disclosed: dict = {}
 
 
 # --- BuyerLead ------------------------------------------------------------------
@@ -145,6 +151,9 @@ class BuyerLeadUpdate(BaseModel):
     feedback: str | None = None
     status: str | None = Field(default=None, pattern=_BUY_STATUS_PATTERN)
     notes: str | None = None
+    negotiation_stage: int | None = Field(default=None, ge=1, le=5)
+    intel: dict | None = None
+    disclosed: dict | None = None
 
 
 class BuyerLeadOut(BuyerLeadBase):
@@ -156,6 +165,9 @@ class BuyerLeadOut(BuyerLeadBase):
     last_contacted_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    negotiation_stage: int = 1
+    intel: dict = {}
+    disclosed: dict = {}
 
 
 # --- Derived: match + health + next-action --------------------------------------
