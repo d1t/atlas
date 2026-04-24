@@ -59,8 +59,8 @@ _DEAL_NEW_COLUMNS: dict[str, str] = {
 # nullable-with-default so pre-existing rows stay valid.
 _LEAD_NEGOTIATION_COLUMNS: dict[str, str] = {
     "negotiation_stage": "INTEGER DEFAULT 1",
-    "intel": "JSON",
-    "disclosed": "JSON",
+    "intel": "JSON DEFAULT '{}'",
+    "disclosed": "JSON DEFAULT '{}'",
 }
 
 
