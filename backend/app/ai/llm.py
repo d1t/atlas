@@ -234,67 +234,106 @@ def _mock_classification(user: str) -> dict:
 def _mock_outreach(user: str) -> str:
     """Cold outreach. Deliberately contains NO offer price — rule #1 of negotiation
     is 'don't anchor yourself against yourself'. We ask the supplier to quote first.
+
+    Stage-1 disclosure rules (mirrors ``document_generation.DOC_SYSTEMS["outreach_email"]``):
+
+    * NEVER emit the exact target tonnage; use opportunity_disclosure.volume_disclosure
+      (a band) verbatim, or "vessel-scale parcel (exploratory)" when missing.
+    * NEVER name a destination port; use opportunity_disclosure.geo_disclosure (region).
+    * Frame as a SINGLE deal — no "12-month rolling" / "monthly programme" language.
+    * Honest BATNA framing: acknowledge multi-origin evaluation when applicable.
+    * Phrase asks as real questions (≥3 '?' chars) so the supplier must reply.
+    * If sender.company_name is empty, omit the company-name clause entirely
+      rather than leaking a placeholder.
     """
     ctx = _parse_inputs(user)
     sender = ctx.get("sender") or {}
     supplier = ctx.get("supplier") or {}
     deal = ctx.get("deal") or {}
+    disclosure = ctx.get("opportunity_disclosure") or {}
 
     commodity = (
         supplier.get("commodity")
         or deal.get("commodity")
+        or disclosure.get("commodity")
         or _extract(user, "commodity")
         or "the specified commodity"
     )
     supplier_name = supplier.get("name") or _extract(user, "company") or "your company"
     supplier_country = supplier.get("country") or "your region"
-    volume_mt = deal.get("volume_mt")
-    incoterms = deal.get("incoterms") or "FOB / CFR"
 
-    sender_name = sender.get("full_name") or "[Your Name]"
-    sender_company = sender.get("company_name") or "[Your Company]"
+    volume_band = (
+        disclosure.get("volume_disclosure")
+        or "vessel-scale parcel (exploratory)"
+    )
+    geo = disclosure.get("geo_disclosure") or "the destination region"
+    evaluating_origins = bool(disclosure.get("evaluating_origins", True))
+
+    sender_name = sender.get("full_name") or ""
+    sender_company = sender.get("company_name") or ""
     sender_title = sender.get("title") or "Trader"
     sender_email = sender.get("email") or ""
     sender_phone = sender.get("phone") or ""
 
-    volume_line = (
-        f"- Target volume: {int(volume_mt):,} MT/month, 12-month rolling contract"
-        if isinstance(volume_mt, (int, float)) and volume_mt > 0
-        else "- Target volume: monthly tonnage to be confirmed based on your capacity"
-    )
     spec_guidance = _default_spec_for(commodity)
 
-    signature_lines = [sender_name, f"{sender_title}, {sender_company}"]
+    # Identification clause: include the company only if we have one.
+    if sender_name and sender_company:
+        intro = (
+            f"I'm {sender_name} at {sender_company}. We structure physical "
+            f"{commodity} supply for end-buyers under bank-instrument-backed "
+            f"contracts."
+        )
+    elif sender_name:
+        intro = (
+            f"I'm {sender_name}, structuring physical {commodity} supply for "
+            f"end-buyers under bank-instrument-backed contracts."
+        )
+    else:
+        intro = (
+            f"Reaching out regarding physical {commodity} supply, structured "
+            f"under bank-instrument-backed contracts."
+        )
+
+    batna_line = (
+        "We are evaluating two origins for this enquiry this week and would "
+        "like to include you in the comparison."
+        if evaluating_origins
+        else "We would like to include you in this enquiry."
+    )
+
+    signature_lines = [sender_name] if sender_name else []
+    if sender_company:
+        signature_lines.append(f"{sender_title}, {sender_company}")
+    else:
+        signature_lines.append(sender_title)
     if sender_email:
         signature_lines.append(sender_email)
     if sender_phone:
         signature_lines.append(sender_phone)
 
-    subject_vol = (
-        f" — {int(volume_mt):,} MT/month"
-        if isinstance(volume_mt, (int, float)) and volume_mt > 0
-        else ""
-    )
-
     return (
-        f"Subject: {commodity.title()} sourcing enquiry{subject_vol}\n\n"
+        f"Subject: {commodity.title()} sourcing enquiry — {volume_band} "
+        f"to {geo}\n\n"
         f"Dear {supplier_name} team,\n\n"
-        f"I'm {sender_name} at {sender_company}. We structure physical {commodity} "
-        f"supply for end-buyers under bank-instrument-backed contracts.\n\n"
-        f"Your name came up as an established producer in {supplier_country}, and we "
-        f"would like to explore whether a supply line fits your current capacity.\n\n"
-        f"Requirements:\n"
-        f"{volume_line}\n"
+        f"{intro}\n\n"
+        f"Your name came up as an established producer in {supplier_country}. "
+        f"{batna_line}\n\n"
+        f"Single-cargo enquiry. Indicative parameters:\n"
+        f"- Volume: {volume_band}\n"
         f"{spec_guidance}\n"
-        f"- Incoterms: {incoterms} (destination port disclosed on NCNDA)\n"
-        f"- Payment: DLC at sight or SBLC, issued by top-50 bank\n"
-        f"- First shipment: earliest available window\n\n"
-        f"To progress, please share:\n"
-        f"- Your indicative FOB and CFR levels (USD/MT)\n"
-        f"- Minimum order quantity and lead time from LC confirmation\n"
-        f"- Accepted payment instruments and tenor\n\n"
-        f"We are ready to execute an NCNDA on interest, and end-buyer LOI / proof of "
-        f"funds is available on request. Happy to take a 20-minute call this week.\n\n"
+        f"- Incoterms interest: FOB and CFR (please indicate both)\n"
+        f"- Payment instrument family: DLC at sight or SBLC, top-50 bank "
+        f"(tenor on NCNDA)\n"
+        f"- Loading window: subject to your origination cycle and our "
+        f"LC issuance timing\n\n"
+        f"To progress, could you share:\n"
+        f"- Your indicative FOB and CFR levels (USD/MT) to {geo}?\n"
+        f"- Minimum order quantity and typical lead time from LC confirmation?\n"
+        f"- Accepted payment instruments and acceptable tenor?\n\n"
+        f"We are ready to execute an NCNDA on interest, and end-buyer LOI / "
+        f"proof of funds is available on request. Happy to take a 20-minute "
+        f"call this week.\n\n"
         f"Best regards,\n" + "\n".join(signature_lines) + "\n"
     )
 
