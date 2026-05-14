@@ -11,6 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
 from app.core.deps import get_current_user
+from app.data.curated_counterparties import (
+    CuratedCounterparty,
+    get_curated_counterparties,
+)
 from app.models.deal import Deal
 from app.models.opportunity import (
     BuyerLead,
@@ -22,6 +26,8 @@ from app.schemas.opportunity import (
     BuyerLeadCreate,
     BuyerLeadOut,
     BuyerLeadUpdate,
+    CuratedCounterpartyOut,
+    CuratedSeedRequest,
     HealthScore,
     MatchingResult,
     NextActionsOut,
@@ -232,6 +238,120 @@ async def delete_supplier_lead(
     lead = await _get_supplier_lead(db, opportunity_id, lead_id)
     await db.delete(lead)
     await db.commit()
+
+
+# --- Curated counterparties -----------------------------------------------------
+#
+# For commodity/origin lanes with a small, well-known counterparty universe
+# (Brazil raw sugar being the canonical example), a static vetted list beats
+# web-search + email enrichment. The registry lives in
+# ``app.data.curated_counterparties``; these endpoints expose it on the
+# opportunity workspace.
+
+
+def _already_added_names(leads: list[SupplierLead]) -> set[str]:
+    """Names already attached to this opportunity, case-folded for matching."""
+    return {(lead.supplier_name or "").strip().casefold() for lead in leads}
+
+
+def _to_curated_out(
+    cp: CuratedCounterparty, already: set[str]
+) -> CuratedCounterpartyOut:
+    return CuratedCounterpartyOut(
+        name=cp.name,
+        country=cp.country,
+        commodity=cp.commodity,
+        website=cp.website,
+        type=cp.type,
+        description=cp.description,
+        already_added=cp.name.strip().casefold() in already,
+    )
+
+
+@router.get(
+    "/{opportunity_id}/curated-suppliers",
+    response_model=list[CuratedCounterpartyOut],
+)
+async def list_curated_suppliers(
+    opportunity_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> list[CuratedCounterpartyOut]:
+    """Preview curated counterparties for this opportunity's commodity.
+
+    Lookup is by commodity (case-insensitive substring match — see
+    :func:`app.data.curated_counterparties.get_curated_counterparties`); origin
+    is shown to the user per entry. Each entry carries an ``already_added``
+    flag so the UI can avoid duplicating existing supplier leads.
+    """
+    opp = await _get_opportunity(db, opportunity_id)
+    curated = get_curated_counterparties(opp.commodity)
+    if not curated:
+        return []
+    sup, _ = await _load_leads(db, opportunity_id)
+    already = _already_added_names(sup)
+    return [_to_curated_out(cp, already) for cp in curated]
+
+
+@router.post(
+    "/{opportunity_id}/curated-suppliers/seed",
+    response_model=list[SupplierLeadOut],
+    status_code=201,
+)
+async def seed_curated_suppliers(
+    opportunity_id: int,
+    payload: CuratedSeedRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> list[SupplierLeadOut]:
+    """Create supplier leads for curated counterparties on this opportunity.
+
+    Idempotent: counterparties already attached (matched by name,
+    case-insensitive) are skipped rather than duplicated. Emails are left
+    empty — the site-crawler fills them in on first AI Classify pass, which
+    avoids shipping guessed role inboxes that may bounce.
+    """
+    opp = await _get_opportunity(db, opportunity_id)
+    curated = get_curated_counterparties(opp.commodity)
+    if not curated:
+        return []
+
+    requested = {n.strip().casefold() for n in payload.names if n.strip()}
+    if requested:
+        curated = [c for c in curated if c.name.strip().casefold() in requested]
+        if not curated:
+            raise HTTPException(
+                status_code=404,
+                detail="No curated counterparties match the requested names",
+            )
+
+    sup, _ = await _load_leads(db, opportunity_id)
+    already = _already_added_names(sup)
+
+    created: list[SupplierLead] = []
+    for cp in curated:
+        if cp.name.strip().casefold() in already:
+            continue
+        lead = SupplierLead(
+            opportunity_id=opportunity_id,
+            supplier_name=cp.name,
+            country=cp.country,
+            email=None,
+            notes=f"[Curated] {cp.type} — {cp.description} ({cp.website})",
+            status="new",
+        )
+        db.add(lead)
+        created.append(lead)
+
+    if not created:
+        # Everything in the curated set was already attached — return empty
+        # rather than 409 so the UI can render "already added" without errors.
+        return []
+
+    await db.commit()
+    for lead in created:
+        await db.refresh(lead)
+    return [SupplierLeadOut.model_validate(lead) for lead in created]
 
 
 # --- Buyer leads ----------------------------------------------------------------
