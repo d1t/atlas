@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai import get_llm
 from app.ai.llm import MockLLM
 from app.core.config import get_settings
+from app.data.curated_counterparties import get_curated_counterparties
 from app.models.supplier import Supplier
 from app.scrapers.site_crawler import SiteCrawler
 from app.scrapers.web_scraper import WebScraper
@@ -70,12 +71,44 @@ class SupplierDiscoveryService:
         else:
             candidates = await self._llm_only_discovery(commodity, country, limit)
 
+        # Prepend curated counterparties for this lane (e.g. Brazil raw sugar
+        # → Copersucar, Alvean, Raízen, Sucden Brazil, Czarnikow Brazil). They
+        # appear first so the user sees vetted desks before scraped web hits,
+        # and ``source="curated"`` lets the UI render a distinct badge.
+        curated = self._curated_candidates(commodity, country)
+        candidates = curated + candidates
+
         candidates = await self._dedupe(candidates)
         candidates = candidates[:limit]
         # After dedupe, walk each supplier's website to look for a real email
         # and phone on the contact page. Best-effort: missing values stay None.
         await self._enrich_contacts(candidates)
         return candidates
+
+    def _curated_candidates(
+        self, commodity: str, country: str | None
+    ) -> list[SupplierCandidate]:
+        """Render curated counterparties as :class:`SupplierCandidate` objects.
+
+        Match is by commodity (substring, case-insensitive) and — when the
+        caller specified ``country`` — by exact origin. Without a country
+        filter we still surface the registry entries so the user can see
+        vetted desks even on a global discovery search.
+        """
+        entries = get_curated_counterparties(commodity, country)
+        return [
+            SupplierCandidate(
+                name=cp.name,
+                type=cp.type,
+                country=cp.country,
+                commodity=cp.commodity,
+                website=cp.website,
+                email=None,
+                description=cp.description,
+                source="curated",
+            )
+            for cp in entries
+        ]
 
     async def _enrich_contacts(self, candidates: list[SupplierCandidate]) -> None:
         if not self._crawler or not candidates:

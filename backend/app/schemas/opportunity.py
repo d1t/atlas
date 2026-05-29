@@ -235,3 +235,29 @@ class OpportunityDashboard(BaseModel):
     matches: MatchingResult
     health: HealthScore
     next_actions: NextActionsOut
+
+
+# --- Curated counterparties ---------------------------------------------------
+
+
+class CuratedCounterpartyOut(BaseModel):
+    """A pre-vetted counterparty surfaced for a known commodity/origin lane."""
+
+    name: str
+    country: str
+    commodity: str
+    website: str
+    type: str
+    description: str
+    already_added: bool = False
+
+
+class CuratedSeedRequest(BaseModel):
+    """Request to seed selected curated counterparties as supplier leads.
+
+    When ``names`` is empty / omitted the server seeds the full matching set;
+    when non-empty only the named entries are seeded. Names are matched
+    case-insensitively against ``CuratedCounterparty.name``.
+    """
+
+    names: list[str] = []

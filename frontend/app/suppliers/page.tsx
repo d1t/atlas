@@ -160,7 +160,19 @@ export default function SuppliersPage() {
                   className="row cursor-pointer"
                   onClick={() => selectSupplier(s)}
                 >
-                  <td className="py-2 font-medium text-gray-100">{s.name}</td>
+                  <td className="py-2 font-medium text-gray-100">
+                    <span className="flex items-center gap-2">
+                      {s.name}
+                      {s.source === "curated" && (
+                        <span
+                          className="rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300"
+                          title="Pre-vetted counterparty from Atlas's curated registry"
+                        >
+                          Curated
+                        </span>
+                      )}
+                    </span>
+                  </td>
                   <td>
                     <span className="badge">{s.type || "unknown"}</span>
                   </td>
