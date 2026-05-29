@@ -173,7 +173,7 @@ async def test_list_curated_empty_for_non_curated_commodity(client: AsyncClient)
     assert r.json() == []
 
 
-async def test_seed_curated_creates_supplier_leads_with_blank_emails(
+async def test_seed_curated_creates_supplier_leads_with_enriched_contacts(
     client: AsyncClient,
 ):
     h = await _auth(client)
@@ -188,8 +188,11 @@ async def test_seed_curated_creates_supplier_leads_with_blank_emails(
     created = r.json()
     assert len(created) == 5
 
-    # Emails are deliberately blank — the site-crawler fills them in later.
-    assert all(lead["email"] is None for lead in created)
+    # Hunter.io mock enrichment populates email, contact_name, contact_title.
+    for lead in created:
+        assert lead["email"] is not None, f"{lead['supplier_name']} has no email"
+        assert lead["contact_name"] is not None
+        assert lead["contact_title"] is not None
 
     # The notes line carries the curated-set provenance so the user can see
     # where the row came from when scanning the supplier panel.

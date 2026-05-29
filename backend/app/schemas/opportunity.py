@@ -70,6 +70,8 @@ class SupplierLeadBase(BaseModel):
     supplier_name: str | None = None
     country: str | None = None
     email: str | None = None
+    contact_name: str | None = None
+    contact_title: str | None = None
     price_mt: float | None = None
     quoted_incoterms: str | None = None
     min_order_mt: float | None = None
@@ -89,6 +91,8 @@ class SupplierLeadUpdate(BaseModel):
     supplier_name: str | None = None
     country: str | None = None
     email: str | None = None
+    contact_name: str | None = None
+    contact_title: str | None = None
     price_mt: float | None = None
     quoted_incoterms: str | None = None
     min_order_mt: float | None = None

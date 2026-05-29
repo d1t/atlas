@@ -63,6 +63,12 @@ _LEAD_NEGOTIATION_COLUMNS: dict[str, str] = {
     "disclosed": "JSON DEFAULT '{}'",
 }
 
+# Hunter.io enrichment fields on supplier_leads.
+_LEAD_CONTACT_COLUMNS: dict[str, str] = {
+    "contact_name": "VARCHAR(255)",
+    "contact_title": "VARCHAR(255)",
+}
+
 
 async def _ensure_columns(
     conn, table: str, new_columns: dict[str, str]
@@ -112,6 +118,10 @@ async def _ensure_lead_negotiation_columns(conn) -> None:
     await _ensure_columns(conn, "buyer_leads", _LEAD_NEGOTIATION_COLUMNS)
 
 
+async def _ensure_lead_contact_columns(conn) -> None:
+    await _ensure_columns(conn, "supplier_leads", _LEAD_CONTACT_COLUMNS)
+
+
 @app.on_event("startup")
 async def on_startup() -> None:
     async with engine.begin() as conn:
@@ -119,6 +129,7 @@ async def on_startup() -> None:
         await _ensure_user_columns(conn)
         await _ensure_deal_columns(conn)
         await _ensure_lead_negotiation_columns(conn)
+        await _ensure_lead_contact_columns(conn)
     llm = get_llm()
     logger.info(
         "Atlas backend ready (env=%s, llm=%s, configured=%s)",

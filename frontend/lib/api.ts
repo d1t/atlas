@@ -451,6 +451,8 @@ export type SupplierLeadInput = {
   supplier_name?: string | null;
   country?: string | null;
   email?: string | null;
+  contact_name?: string | null;
+  contact_title?: string | null;
   price_mt?: number | null;
   quoted_incoterms?: string | null;
   min_order_mt?: number | null;
@@ -489,6 +491,8 @@ export type SupplierLead = Required<
   supplier_name: string | null;
   country: string | null;
   email: string | null;
+  contact_name: string | null;
+  contact_title: string | null;
   price_mt: number | null;
   quoted_incoterms: string | null;
   min_order_mt: number | null;
