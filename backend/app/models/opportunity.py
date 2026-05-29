@@ -101,6 +101,8 @@ class SupplierLead(Base, TimestampMixin):
     supplier_name: Mapped[str | None] = mapped_column(String(255))
     country: Mapped[str | None] = mapped_column(String(128))
     email: Mapped[str | None] = mapped_column(String(255))
+    contact_name: Mapped[str | None] = mapped_column(String(255))
+    contact_title: Mapped[str | None] = mapped_column(String(255))
 
     # Their quote to us.
     price_mt: Mapped[float | None] = mapped_column(Float)

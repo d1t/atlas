@@ -384,6 +384,7 @@ function SupplierPanel({
         <thead className="text-left text-gray-500">
           <tr>
             <th className="pb-1.5 font-medium">Name / country</th>
+            <th className="font-medium">Contact</th>
             <th className="font-medium">Stage</th>
             <th className="font-medium">Price</th>
             <th className="font-medium">Credibility</th>
@@ -608,6 +609,24 @@ function SupplierRow({
           <div className="text-[11px] text-gray-500">{lead.country || "—"}</div>
         </td>
         <td>
+          {lead.email ? (
+            <div>
+              <a
+                href={`mailto:${lead.email}`}
+                className="text-accent hover:underline"
+                title={lead.email}
+              >
+                {lead.contact_name || lead.email}
+              </a>
+              {lead.contact_title && (
+                <div className="text-[10px] text-gray-500">{lead.contact_title}</div>
+              )}
+            </div>
+          ) : (
+            <span className="text-gray-600 italic">no contact</span>
+          )}
+        </td>
+        <td>
           <StageBadge stage={lead.negotiation_stage} />
         </td>
         <td className="text-gray-300">
@@ -664,7 +683,7 @@ function SupplierRow({
       </tr>
       {expanded && (
         <tr>
-          <td colSpan={8} className="bg-black/20 px-3 py-3">
+          <td colSpan={9} className="bg-black/20 px-3 py-3">
             <SupplierLeadEditor
               opportunityId={opportunityId}
               lead={lead}

@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     site_crawler_enabled: bool = True
     site_crawler_max_per_discovery: int = 8
 
+    # Hunter.io email-finding API (https://hunter.io/api-documentation/v2).
+    # Leave empty to use deterministic mock contacts in dev/test.
+    hunter_api_key: str = ""
+
     cors_origins: str = "http://localhost:3000"
 
     jwt_algorithm: str = "HS256"

@@ -3,6 +3,8 @@
 Owns the Opportunity / SupplierLead / BuyerLead entities and exposes the
 match + health + next-action engines that operate on them.
 """
+import asyncio
+import logging
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -43,6 +45,9 @@ from app.schemas.opportunity import (
 from app.services import health as health_service
 from app.services import matching as matching_service
 from app.services import next_action as next_action_service
+from app.services.hunter import HunterClient
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -351,7 +356,43 @@ async def seed_curated_suppliers(
     await db.commit()
     for lead in created:
         await db.refresh(lead)
+
+    # Enrich contacts via Hunter.io Domain Search. Best-effort: failures
+    # leave the fields as None and the trader can still manually fill them.
+    await _enrich_leads_via_hunter(db, created, curated)
+
     return [SupplierLeadOut.model_validate(lead) for lead in created]
+
+
+async def _enrich_leads_via_hunter(
+    db: AsyncSession,
+    leads: list[SupplierLead],
+    curated: list[CuratedCounterparty],
+) -> None:
+    """Best-effort Hunter.io enrichment for freshly-seeded supplier leads."""
+    hunter = HunterClient()
+    website_by_name = {cp.name.strip().casefold(): cp.website for cp in curated}
+
+    async def _enrich_one(lead: SupplierLead) -> None:
+        key = (lead.supplier_name or "").strip().casefold()
+        website = website_by_name.get(key)
+        if not website:
+            return
+        contact = await hunter.enrich_domain(website)
+        if not contact:
+            return
+        lead.email = contact.email
+        parts = [contact.first_name, contact.last_name]
+        lead.contact_name = " ".join(p for p in parts if p) or None
+        lead.contact_title = contact.position
+
+    try:
+        await asyncio.gather(*[_enrich_one(ld) for ld in leads])
+        await db.commit()
+        for ld in leads:
+            await db.refresh(ld)
+    except Exception as exc:
+        logger.warning("Hunter.io enrichment failed: %s", exc)
 
 
 # --- Buyer leads ----------------------------------------------------------------
