@@ -28,6 +28,20 @@ class Settings(BaseSettings):
     site_crawler_enabled: bool = True
     site_crawler_max_per_discovery: int = 8
 
+    # Gmail (SMTP send + IMAP read) via an App Password. All optional; when the
+    # address / app password are empty the integration runs in OFFLINE mode:
+    # outbound emails are recorded but not actually transmitted, and reply-sync
+    # is a no-op. This keeps the whole flow testable without credentials.
+    gmail_address: str = ""
+    gmail_app_password: str = ""
+    gmail_from_name: str = ""
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    imap_host: str = "imap.gmail.com"
+    imap_port: int = 993
+    # How many days back to scan the inbox when syncing replies.
+    imap_lookback_days: int = 14
+
     cors_origins: str = "http://localhost:3000"
 
     jwt_algorithm: str = "HS256"
@@ -36,6 +50,10 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def gmail_configured(self) -> bool:
+        return bool(self.gmail_address and self.gmail_app_password)
 
 
 @lru_cache

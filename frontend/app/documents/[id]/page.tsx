@@ -3,7 +3,7 @@
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "../../../components/AppShell";
-import { api, Document } from "../../../lib/api";
+import { api, Document, GmailStatus } from "../../../lib/api";
 
 type NegotiationBlock = {
   stage?: number;
@@ -197,11 +197,131 @@ export default function DocumentPage() {
           </div>
 
           <div className="space-y-4">
+            <SendPanel doc={doc} onSent={load} />
             {negotiation && <NegotiationPanel n={negotiation} />}
           </div>
         </div>
       )}
     </AppShell>
+  );
+}
+
+function readNum(inputs: Record<string, unknown>, key: string): number | undefined {
+  const v = inputs?.[key];
+  return typeof v === "number" ? v : undefined;
+}
+
+function SendPanel({ doc, onSent }: { doc: Document; onSent: () => void }) {
+  const inputs = doc.inputs || {};
+  const supplierBlock =
+    inputs.supplier && typeof inputs.supplier === "object"
+      ? (inputs.supplier as { email?: string })
+      : null;
+  const buyerBlock =
+    inputs.buyer && typeof inputs.buyer === "object"
+      ? (inputs.buyer as { email?: string })
+      : null;
+
+  const [status, setStatus] = useState<GmailStatus | null>(null);
+  const [to, setTo] = useState(
+    supplierBlock?.email || buyerBlock?.email || "",
+  );
+  const [subject, setSubject] = useState("");
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .gmailStatus()
+      .then(setStatus)
+      .catch(() => setStatus(null));
+  }, []);
+
+  async function send() {
+    if (!to.trim()) {
+      setError("Enter a recipient email.");
+      return;
+    }
+    setSending(true);
+    setError(null);
+    setResult(null);
+    try {
+      const msg = await api.sendDocument({
+        document_id: doc.id,
+        to_email: to.trim(),
+        subject: subject.trim() || undefined,
+        opportunity_id: readNum(inputs, "opportunity_id"),
+        supplier_lead_id: readNum(inputs, "supplier_lead_id"),
+        buyer_lead_id: readNum(inputs, "buyer_lead_id"),
+      });
+      setResult(
+        msg.status === "offline"
+          ? `Recorded offline (no Gmail credentials). Would have gone to ${msg.to_email}.`
+          : `Sent to ${msg.to_email}.`,
+      );
+      onSent();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Send failed");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  const offline = !status?.configured;
+
+  return (
+    <div className="card space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="text-xs uppercase tracking-wide text-gray-500">
+          Send via Gmail
+        </div>
+        <span
+          className={`rounded px-1.5 py-0.5 text-[10px] uppercase ${
+            offline
+              ? "bg-gray-700/50 text-gray-300"
+              : "bg-green-900/40 text-green-200"
+          }`}
+        >
+          {offline ? "Offline" : "Live"}
+        </span>
+      </div>
+
+      {status?.address && (
+        <div className="text-xs text-gray-500">From: {status.address}</div>
+      )}
+
+      <label className="block text-xs">
+        <span className="text-gray-500">To</span>
+        <input
+          className="input mt-1 w-full text-sm"
+          value={to}
+          onChange={(e) => setTo(e.target.value)}
+          placeholder="counterparty@example.com"
+        />
+      </label>
+      <label className="block text-xs">
+        <span className="text-gray-500">Subject (optional — taken from draft)</span>
+        <input
+          className="input mt-1 w-full text-sm"
+          value={subject}
+          onChange={(e) => setSubject(e.target.value)}
+          placeholder="Leave blank to use the draft's Subject line"
+        />
+      </label>
+
+      <button className="btn-primary w-full" onClick={send} disabled={sending}>
+        {sending ? "Sending…" : offline ? "Record send (offline)" : "Send email"}
+      </button>
+
+      {result && <div className="text-xs text-green-400">{result}</div>}
+      {error && <div className="text-xs text-red-400">{error}</div>}
+
+      <p className="text-[11px] leading-snug text-gray-500">
+        Review the draft on the left before sending — Atlas only sends what you
+        approve here. Replies sync back to the lead from the Strategy board.
+      </p>
+    </div>
   );
 }
 
