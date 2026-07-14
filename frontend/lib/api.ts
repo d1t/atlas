@@ -378,6 +378,73 @@ export const api = {
     request<CommodityQuote>(
       `/api/v1/prices/${encodeURIComponent(commodity)}${refresh ? "?refresh=true" : ""}`,
     ),
+
+  // gmail email
+  gmailStatus: () => request<GmailStatus>("/api/v1/email/status"),
+  listEmails: (
+    params: {
+      opportunity_id?: number;
+      supplier_lead_id?: number;
+      buyer_lead_id?: number;
+    } = {},
+  ) => {
+    const qs = new URLSearchParams();
+    if (params.opportunity_id) qs.set("opportunity_id", String(params.opportunity_id));
+    if (params.supplier_lead_id)
+      qs.set("supplier_lead_id", String(params.supplier_lead_id));
+    if (params.buyer_lead_id) qs.set("buyer_lead_id", String(params.buyer_lead_id));
+    const s = qs.toString();
+    return request<EmailMessage[]>(`/api/v1/email${s ? `?${s}` : ""}`);
+  },
+  sendEmail: (payload: EmailSendInput) =>
+    request<EmailMessage>("/api/v1/email/send", { method: "POST", json: payload }),
+  sendDocument: (payload: SendDocumentInput) =>
+    request<EmailMessage>("/api/v1/email/send-document", {
+      method: "POST",
+      json: payload,
+    }),
+  syncReplies: () =>
+    request<ReplySyncResult>("/api/v1/email/sync", { method: "POST" }),
+
+  // strategy engine
+  listStrategies: () => request<Strategy[]>("/api/v1/strategy"),
+  createStrategy: (payload: StrategyInput) =>
+    request<Strategy>("/api/v1/strategy", { method: "POST", json: payload }),
+  getStrategy: (id: number) => request<Strategy>(`/api/v1/strategy/${id}`),
+  updateStrategy: (id: number, payload: Partial<StrategyInput> & { status?: string }) =>
+    request<Strategy>(`/api/v1/strategy/${id}`, { method: "PATCH", json: payload }),
+  deleteStrategy: (id: number) =>
+    request<void>(`/api/v1/strategy/${id}`, { method: "DELETE" }),
+  replanPillars: (id: number) =>
+    request<Strategy>(`/api/v1/strategy/${id}/replan-pillars`, { method: "POST" }),
+  generatePlan: (id: number, week_start?: string) =>
+    request<StrategyTask[]>(`/api/v1/strategy/${id}/generate-plan`, {
+      method: "POST",
+      json: { week_start: week_start ?? null },
+    }),
+  getStrategyBoard: (id: number) =>
+    request<StrategyBoard>(`/api/v1/strategy/${id}/board`),
+  sendStrategyDigest: (id: number, to_email?: string) =>
+    request<DigestResult>(`/api/v1/strategy/${id}/digest`, {
+      method: "POST",
+      json: { to_email: to_email || null },
+    }),
+  createStrategyTask: (id: number, payload: StrategyTaskInput) =>
+    request<StrategyTask>(`/api/v1/strategy/${id}/tasks`, {
+      method: "POST",
+      json: payload,
+    }),
+  updateStrategyTask: (
+    id: number,
+    taskId: number,
+    payload: Partial<StrategyTaskInput> & { status?: string },
+  ) =>
+    request<StrategyTask>(`/api/v1/strategy/${id}/tasks/${taskId}`, {
+      method: "PATCH",
+      json: payload,
+    }),
+  deleteStrategyTask: (id: number, taskId: number) =>
+    request<void>(`/api/v1/strategy/${id}/tasks/${taskId}`, { method: "DELETE" }),
 };
 
 export type CommodityInfo = {
@@ -605,4 +672,168 @@ export const STAGE_LABELS: Record<string, string> = {
   shipment: "Shipment",
   closed: "Closed",
   lost: "Lost",
+};
+
+// --- Gmail email types ---
+
+export type GmailStatus = {
+  configured: boolean;
+  address: string | null;
+  mode: "live" | "offline";
+};
+
+export type EmailMessage = {
+  id: number;
+  direction: "outbound" | "inbound";
+  status: string;
+  opportunity_id: number | null;
+  supplier_lead_id: number | null;
+  buyer_lead_id: number | null;
+  deal_id: number | null;
+  document_id: number | null;
+  to_email: string | null;
+  from_email: string | null;
+  subject: string | null;
+  body: string;
+  message_id: string | null;
+  in_reply_to: string | null;
+  matched_side: string | null;
+  sent_at: string | null;
+  received_at: string | null;
+  error: string | null;
+  created_at: string | null;
+};
+
+export type EmailSendInput = {
+  to_email: string;
+  subject: string;
+  body: string;
+  opportunity_id?: number;
+  supplier_lead_id?: number;
+  buyer_lead_id?: number;
+  deal_id?: number;
+  document_id?: number;
+  in_reply_to_message_id?: number;
+};
+
+export type SendDocumentInput = {
+  document_id: number;
+  to_email?: string;
+  subject?: string;
+  opportunity_id?: number;
+  supplier_lead_id?: number;
+  buyer_lead_id?: number;
+  deal_id?: number;
+};
+
+export type ReplySyncResult = {
+  fetched: number;
+  matched: number;
+  new_messages: EmailMessage[];
+  mode: "live" | "offline";
+};
+
+export type DigestResult = {
+  subject: string;
+  mode: "live" | "offline";
+  message: EmailMessage;
+};
+
+// --- Strategy engine types ---
+
+export type PillarKey = "origination" | "demand" | "supply" | "execution";
+
+export const PILLAR_LABELS: Record<PillarKey, string> = {
+  origination: "Origination",
+  demand: "Demand (Buy-side)",
+  supply: "Supply (Sell-side)",
+  execution: "Execution & Close",
+};
+
+export type PillarObjective = {
+  objective: string;
+  kpi: string;
+  target: number;
+};
+
+export type StrategyInput = {
+  title: string;
+  north_star?: string | null;
+  commodity?: string | null;
+  origin_region?: string | null;
+  destination_region?: string | null;
+  horizon?: string;
+  target_volume_mt?: number | null;
+  target_margin_per_mt?: number | null;
+  auto_plan?: boolean;
+};
+
+export type Strategy = {
+  id: number;
+  title: string;
+  north_star: string | null;
+  commodity: string | null;
+  origin_region: string | null;
+  destination_region: string | null;
+  horizon: string;
+  target_volume_mt: number | null;
+  target_margin_per_mt: number | null;
+  pillars: Partial<Record<PillarKey, PillarObjective>>;
+  status: string;
+  owner_id: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type StrategyTaskInput = {
+  pillar: PillarKey;
+  title: string;
+  detail?: string | null;
+  cadence?: "daily" | "weekly" | "once";
+  priority?: "high" | "medium" | "low";
+  week_start?: string | null;
+  due_at?: string | null;
+  opportunity_id?: number | null;
+};
+
+export type StrategyTask = {
+  id: number;
+  strategy_id: number;
+  pillar: PillarKey;
+  title: string;
+  detail: string | null;
+  cadence: string;
+  priority: "high" | "medium" | "low";
+  status: "todo" | "doing" | "done" | "skipped";
+  week_start: string | null;
+  due_at: string | null;
+  opportunity_id: number | null;
+  supplier_lead_id: number | null;
+  buyer_lead_id: number | null;
+  source: string;
+  completed_at: string | null;
+  created_at: string | null;
+};
+
+export type PillarProgress = {
+  pillar: PillarKey;
+  label: string;
+  objective: string | null;
+  kpi: string | null;
+  target: number | null;
+  actual: number;
+  progress_pct: number;
+  tasks_total: number;
+  tasks_done: number;
+  status: "on_track" | "at_risk" | "behind" | "idle";
+  detail: string;
+};
+
+export type StrategyBoard = {
+  strategy: Strategy;
+  week_start: string;
+  pillars: PillarProgress[];
+  week_tasks: StrategyTask[];
+  today_tasks: StrategyTask[];
+  headline: string;
 };

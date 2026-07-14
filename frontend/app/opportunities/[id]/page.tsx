@@ -32,6 +32,8 @@ export default function OpportunityWorkspacePage() {
   const [error, setError] = useState<string | null>(null);
   const [addingSupplier, setAddingSupplier] = useState(false);
   const [addingBuyer, setAddingBuyer] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -91,13 +93,51 @@ export default function OpportunityWorkspacePage() {
     }
   }
 
+  async function onSyncReplies() {
+    setSyncing(true);
+    setError(null);
+    setSyncMsg(null);
+    try {
+      const res = await api.syncReplies();
+      const forThis = res.new_messages.filter(
+        (m) => m.opportunity_id === id,
+      ).length;
+      if (res.mode === "offline") {
+        setSyncMsg(
+          "Gmail is offline (no credentials) — nothing to sync. Add a Gmail App Password to pull live replies.",
+        );
+      } else if (res.new_messages.length === 0) {
+        setSyncMsg(`Checked inbox (${res.fetched} scanned) — no new replies.`);
+      } else {
+        setSyncMsg(
+          `Synced ${res.new_messages.length} new repl${
+            res.new_messages.length === 1 ? "y" : "ies"
+          } · ${res.matched} matched to leads (${forThis} on this opportunity).`,
+        );
+      }
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   return (
     <AppShell>
       <OpportunityHeader
         opp={opp}
         health={health}
         onStatusChange={onStatusChange}
+        onSyncReplies={onSyncReplies}
+        syncing={syncing}
       />
+
+      {syncMsg && (
+        <div className="mt-3 rounded-md border border-accent/30 bg-accent/10 p-3 text-sm text-gray-200">
+          {syncMsg}
+        </div>
+      )}
 
       {error && (
         <div className="mt-3 rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
@@ -172,10 +212,14 @@ function OpportunityHeader({
   opp,
   health,
   onStatusChange,
+  onSyncReplies,
+  syncing,
 }: {
   opp: Opportunity;
   health: HealthScore;
   onStatusChange: (s: string) => void;
+  onSyncReplies: () => void;
+  syncing: boolean;
 }) {
   return (
     <div className="flex flex-wrap items-start justify-between gap-3">
@@ -194,6 +238,14 @@ function OpportunityHeader({
       </div>
       <div className="flex items-center gap-3">
         <HealthBadge score={health.score} status={health.status} />
+        <button
+          className="btn-ghost text-sm"
+          onClick={onSyncReplies}
+          disabled={syncing}
+          title="Pull Gmail replies and advance matched leads"
+        >
+          {syncing ? "Syncing…" : "Sync replies"}
+        </button>
         <select
           className="input text-sm"
           value={opp.status}
