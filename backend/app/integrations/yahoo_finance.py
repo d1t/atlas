@@ -27,8 +27,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import httpx
@@ -36,10 +37,27 @@ import httpx
 logger = logging.getLogger(__name__)
 
 _YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+# Yahoo's cookie+crumb handshake. Visiting fc.yahoo.com sets the consent
+# cookie; getcrumb then returns a short token that must accompany data calls.
+# Mimicking a real browser this way sharply reduces 429s on datacenter IPs.
+_YAHOO_COOKIE_URL = "https://fc.yahoo.com/"
+_YAHOO_CRUMB_URL = "https://query1.finance.yahoo.com/v1/test/getcrumb"
 _USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 )
+
+# --- Retry / backoff -------------------------------------------------------
+# Yahoo/Stooq occasionally answer transient 429/5xx or time out. Retry those a
+# few times with exponential backoff + jitter before giving up / falling back.
+_MAX_ATTEMPTS = 3
+_RETRY_BASE_DELAY = 0.4  # seconds; grows 0.4, 0.8, ... plus jitter
+_RETRY_JITTER = 0.3
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+
+
+def _backoff_delay(attempt: int) -> float:
+    return _RETRY_BASE_DELAY * (2**attempt) + random.uniform(0, _RETRY_JITTER)
 
 
 @dataclass(frozen=True)
@@ -203,9 +221,19 @@ class PriceQuote:
 
 # ---------------- In-memory TTL cache (per process) ----------------
 
-_CACHE_TTL_SECONDS = 300  # 5 minutes per PRD
+# Fresh window: within this a cached quote is served directly. Widened from the
+# original 5 min to cut upstream calls (and thus rate-limit exposure).
+_CACHE_TTL_SECONDS = 900  # 15 minutes
 _cache: dict[str, tuple[float, PriceQuote]] = {}
+# Last successful quote per ticker, kept regardless of age. Used to serve a
+# stale price (flagged ``stale=True``) when a live fetch fails, so the UI shows
+# a slightly old number instead of an error.
+_last_good: dict[str, PriceQuote] = {}
 _locks: dict[str, asyncio.Lock] = {}
+
+# Cached (fetched_at, crumb, cookies) for the Yahoo handshake.
+_CRUMB_TTL_SECONDS = 3600  # 1 hour
+_crumb_cache: tuple[float, str, dict[str, str]] | None = None
 
 
 def _get_lock(ticker: str) -> asyncio.Lock:
@@ -241,7 +269,93 @@ async def get_price(commodity: str) -> PriceQuote | None:
         quote = await _fetch_yahoo(spec)
         if quote is not None:
             _cache[spec.ticker] = (time.time(), quote)
-        return quote
+            _last_good[spec.ticker] = quote
+            return quote
+
+        # Live fetch failed — serve the last good quote (if any) as stale
+        # rather than nothing, so traders see a recent-ish reference price.
+        stale = _last_good.get(spec.ticker)
+        if stale is not None:
+            logger.warning(
+                "Serving stale %s quote after fetch failure", spec.ticker
+            )
+            return replace(stale, stale=True)
+        return None
+
+
+async def _get_crumb() -> tuple[str | None, dict[str, str]]:
+    """Perform (and cache) Yahoo's cookie+crumb handshake.
+
+    Returns ``(crumb, cookies)``. On any failure returns ``(None, {})`` so the
+    caller falls back to an anonymous request rather than breaking.
+    """
+    global _crumb_cache
+    now = time.time()
+    if _crumb_cache is not None and (now - _crumb_cache[0]) < _CRUMB_TTL_SECONDS:
+        return _crumb_cache[1], _crumb_cache[2]
+
+    headers = {"User-Agent": _USER_AGENT}
+    try:
+        async with httpx.AsyncClient(timeout=10.0, headers=headers) as client:
+            # Seed consent cookies; this endpoint often 404s but still sets them.
+            try:
+                await client.get(_YAHOO_COOKIE_URL)
+            except httpx.HTTPError:
+                pass
+            resp = await client.get(_YAHOO_CRUMB_URL)
+            resp.raise_for_status()
+            crumb = resp.text.strip()
+            cookies = {c.name: c.value for c in client.cookies.jar}
+    except httpx.HTTPError as exc:
+        logger.info("Yahoo crumb handshake failed (continuing anonymously): %s", exc)
+        return None, {}
+
+    # A valid crumb is a short opaque token; HTML means we got an error page.
+    if not crumb or "<" in crumb or len(crumb) > 64:
+        logger.info("Yahoo crumb response looked invalid; continuing anonymously")
+        return None, {}
+
+    _crumb_cache = (now, crumb, cookies)
+    return crumb, cookies
+
+
+async def _get_with_retry(
+    url: str,
+    *,
+    params: dict[str, Any],
+    headers: dict[str, str],
+    cookies: dict[str, str] | None = None,
+) -> httpx.Response | None:
+    """GET ``url`` retrying transient 429/5xx + timeouts with backoff+jitter.
+
+    Returns the ``Response`` on success (any non-retryable status) or ``None``
+    if it exhausted retries or hit a non-retryable transport error.
+    """
+    last: Exception | None = None
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            async with httpx.AsyncClient(
+                timeout=10.0, cookies=cookies or None
+            ) as client:
+                resp = await client.get(url, params=params, headers=headers)
+        except httpx.TimeoutException as exc:
+            last = exc
+        except httpx.HTTPError as exc:
+            # Connect/DNS errors etc. — not worth retrying; let caller fall back.
+            logger.warning("HTTP error for %s: %s", url, exc)
+            return None
+        else:
+            if resp.status_code not in _RETRYABLE_STATUS:
+                return resp
+            last = httpx.HTTPStatusError(
+                f"retryable status {resp.status_code}",
+                request=resp.request,
+                response=resp,
+            )
+        if attempt < _MAX_ATTEMPTS - 1:
+            await asyncio.sleep(_backoff_delay(attempt))
+    logger.warning("Exhausted retries for %s (%s)", url, last)
+    return None
 
 
 async def _fetch_yahoo(spec: CommoditySpec) -> PriceQuote | None:
@@ -261,18 +375,23 @@ async def _fetch_yahoo(spec: CommoditySpec) -> PriceQuote | None:
 
 async def _fetch_yahoo_chart(spec: CommoditySpec) -> PriceQuote | None:
     url = _YAHOO_CHART_URL.format(ticker=spec.ticker)
-    params = {"interval": "1d", "range": "5d"}
+    params: dict[str, Any] = {"interval": "1d", "range": "5d"}
+    crumb, cookies = await _get_crumb()
+    if crumb:
+        params["crumb"] = crumb
+
+    resp = await _get_with_retry(
+        url,
+        params=params,
+        headers={"User-Agent": _USER_AGENT, "Accept": "application/json"},
+        cookies=cookies,
+    )
+    if resp is None:
+        return None
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                url,
-                params=params,
-                headers={"User-Agent": _USER_AGENT, "Accept": "application/json"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        logger.warning("Yahoo Finance fetch failed for %s: %s", spec.ticker, exc)
+        data = resp.json()
+    except ValueError as exc:
+        logger.warning("Yahoo Finance returned non-JSON for %s: %s", spec.ticker, exc)
         return None
 
     return _parse_chart(data, spec)
@@ -282,21 +401,21 @@ async def _fetch_stooq(spec: CommoditySpec) -> PriceQuote | None:
     """Fallback source — stooq.com end-of-day / intraday CSV."""
     assert spec.stooq_symbol is not None
     url = "https://stooq.com/q/l/"
-    params = {"s": spec.stooq_symbol, "f": "sd2t2ohlcv", "h": "", "e": "csv"}
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                url,
-                params=params,
-                headers={"User-Agent": _USER_AGENT, "Accept": "text/csv,*/*"},
-            )
-            resp.raise_for_status()
-            body = resp.text
-    except httpx.HTTPError as exc:
-        logger.warning("Stooq fetch failed for %s: %s", spec.stooq_symbol, exc)
+    params: dict[str, Any] = {
+        "s": spec.stooq_symbol,
+        "f": "sd2t2ohlcv",
+        "h": "",
+        "e": "csv",
+    }
+    resp = await _get_with_retry(
+        url,
+        params=params,
+        headers={"User-Agent": _USER_AGENT, "Accept": "text/csv,*/*"},
+    )
+    if resp is None:
         return None
 
-    return _parse_stooq_csv(body, spec)
+    return _parse_stooq_csv(resp.text, spec)
 
 
 def _parse_stooq_csv(body: str, spec: CommoditySpec) -> PriceQuote | None:
@@ -397,5 +516,8 @@ def _parse_chart(data: dict[str, Any], spec: CommoditySpec) -> PriceQuote | None
 
 def clear_cache() -> None:
     """Test hook."""
+    global _crumb_cache
     _cache.clear()
+    _last_good.clear()
     _locks.clear()
+    _crumb_cache = None

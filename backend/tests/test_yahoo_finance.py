@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 from unittest.mock import AsyncMock
 
 import pytest
@@ -59,6 +60,30 @@ class _FakeClient:
         )
 
 
+class _CaptureClient:
+    """Fake client that records the query params of each GET."""
+
+    def __init__(self, payload: dict):
+        self._payload = payload
+        self.params: list[dict] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get(self, url, params=None, headers=None):
+        self.params.append(dict(params or {}))
+        req = Request("GET", url, params=params)
+        return Response(
+            status_code=200,
+            content=json.dumps(self._payload).encode(),
+            headers={"content-type": "application/json"},
+            request=req,
+        )
+
+
 def _install_client(monkeypatch, payload, status=200):
     fake = _FakeClient(payload, status)
     monkeypatch.setattr(
@@ -72,6 +97,9 @@ def _install_client(monkeypatch, payload, status=200):
 @pytest.fixture(autouse=True)
 def _clear_cache():
     yahoo_finance.clear_cache()
+    # Pre-seed the crumb so tests don't attempt the Yahoo handshake over the
+    # network; the handshake itself is covered by a dedicated test.
+    yahoo_finance._crumb_cache = (time.time(), "test-crumb", {})
     yield
     yahoo_finance.clear_cache()
 
@@ -160,6 +188,84 @@ async def test_malformed_payload_returns_none(monkeypatch):
     assert q is None
 
 
+async def test_chart_request_includes_crumb(monkeypatch):
+    payload = _chart_payload("SB=F", price=22.0)
+    cap = _CaptureClient(payload)
+    monkeypatch.setattr(yahoo_finance.httpx, "AsyncClient", lambda *a, **kw: cap)
+    monkeypatch.setattr(
+        yahoo_finance,
+        "_get_crumb",
+        AsyncMock(return_value=("CRUMB123", {"A": "1"})),
+    )
+
+    q = await yahoo_finance.get_price("sugar")
+    assert q is not None
+    assert cap.params, "expected at least one chart request"
+    assert cap.params[0].get("crumb") == "CRUMB123"
+
+
+async def test_serves_stale_quote_on_fetch_failure(monkeypatch):
+    # First call succeeds and populates the last-good cache.
+    _install_client(monkeypatch, _chart_payload("SB=F", price=22.0))
+    q1 = await yahoo_finance.get_price("sugar")
+    assert q1 is not None and not q1.stale
+
+    # Expire the fresh cache but keep last-good, then make upstream fail.
+    yahoo_finance._cache.clear()
+
+    class _Boom:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, *args, **kwargs):
+            import httpx
+
+            raise httpx.ConnectError("boom")
+
+    monkeypatch.setattr(yahoo_finance.httpx, "AsyncClient", lambda *a, **kw: _Boom())
+
+    q2 = await yahoo_finance.get_price("sugar")
+    assert q2 is not None
+    assert q2.stale is True
+    assert q2.raw_price == q1.raw_price
+
+
+async def test_retries_then_succeeds_on_transient_429(monkeypatch):
+    payload = _chart_payload("SB=F", price=22.0)
+    calls = {"n": 0}
+
+    class _Flaky:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url, params=None, headers=None):
+            calls["n"] += 1
+            req = Request("GET", url, params=params)
+            # First attempt rate-limited, second succeeds.
+            if calls["n"] == 1:
+                return Response(status_code=429, content=b"", request=req)
+            return Response(
+                status_code=200,
+                content=json.dumps(payload).encode(),
+                headers={"content-type": "application/json"},
+                request=req,
+            )
+
+    monkeypatch.setattr(yahoo_finance.httpx, "AsyncClient", lambda *a, **kw: _Flaky())
+    monkeypatch.setattr(yahoo_finance, "_backoff_delay", lambda attempt: 0.0)
+
+    q = await yahoo_finance.get_price("sugar")
+    assert q is not None
+    assert q.raw_price == 22.0
+    assert calls["n"] == 2  # retried once after the 429
+
+
 async def test_http_failure_returns_none(monkeypatch):
     class _Boom:
         async def __aenter__(self):
@@ -233,6 +339,7 @@ async def test_list_commodities_endpoint(api_client: AsyncClient):
 
 async def test_price_endpoint_sugar(monkeypatch, api_client: AsyncClient):
     yahoo_finance.clear_cache()
+    yahoo_finance._crumb_cache = (time.time(), "test-crumb", {})
     payload = _chart_payload("SB=F", price=22.0, previous_close=21.5)
     _install_client(monkeypatch, payload)
 
@@ -259,6 +366,7 @@ async def test_price_endpoint_unknown_commodity(api_client: AsyncClient):
 
 async def test_price_endpoint_upstream_failure(monkeypatch, api_client: AsyncClient):
     yahoo_finance.clear_cache()
+    yahoo_finance._crumb_cache = (time.time(), "test-crumb", {})
 
     class _Boom:
         async def __aenter__(self):
