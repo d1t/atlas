@@ -40,6 +40,7 @@ export default function StrategyBoardPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -76,6 +77,33 @@ export default function StrategyBoardPage() {
     setError(null);
     try {
       await api.replanPillars(id);
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function syncReplies() {
+    setBusy(true);
+    setError(null);
+    setSyncMsg(null);
+    try {
+      const res = await api.syncReplies();
+      if (res.mode === "offline") {
+        setSyncMsg(
+          "Gmail is offline (no credentials) — nothing to sync. Add a Gmail App Password to pull live replies.",
+        );
+      } else if (res.new_messages.length === 0) {
+        setSyncMsg(`Checked inbox (${res.fetched} scanned) — no new replies.`);
+      } else {
+        setSyncMsg(
+          `Synced ${res.new_messages.length} new repl${
+            res.new_messages.length === 1 ? "y" : "ies"
+          } · ${res.matched} matched to leads. Pillars updated.`,
+        );
+      }
       await load();
     } catch (e) {
       setError((e as Error).message);
@@ -137,11 +165,20 @@ export default function StrategyBoardPage() {
           >
             {busy ? "Working…" : "Generate this week's plan"}
           </button>
+          <button className="btn-ghost" onClick={syncReplies} disabled={busy}>
+            Sync replies
+          </button>
           <button className="btn-ghost" onClick={replanPillars} disabled={busy}>
             Re-plan pillars (AI)
           </button>
         </div>
       </div>
+
+      {syncMsg && (
+        <div className="mb-3 rounded-md border border-accent/30 bg-accent/10 p-3 text-sm text-gray-200">
+          {syncMsg}
+        </div>
+      )}
 
       {error && (
         <div className="mb-3 rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
