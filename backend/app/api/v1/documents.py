@@ -78,6 +78,16 @@ async def generate_document(
     if payload.buyer_lead_id:
         buyer_lead = await db.get(BuyerLead, payload.buyer_lead_id)
 
+    # Persist the linkage ids in `inputs` so a reviewed draft can be emailed
+    # from the document page and attributed back to the right lead/opportunity.
+    for _key, _val in (
+        ("opportunity_id", payload.opportunity_id),
+        ("supplier_lead_id", payload.supplier_lead_id),
+        ("buyer_lead_id", payload.buyer_lead_id),
+    ):
+        if _val is not None:
+            inputs.setdefault(_key, _val)
+
     if payload.deal_id:
         deal = await db.get(Deal, payload.deal_id)
         if not deal:
