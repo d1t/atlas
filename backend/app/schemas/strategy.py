@@ -1,7 +1,7 @@
 """Pydantic schemas for the strategy engine."""
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.models.strategy import (
     PILLARS,
@@ -10,6 +10,7 @@ from app.models.strategy import (
     TASK_PRIORITIES,
     TASK_STATUSES,
 )
+from app.schemas.email import EmailMessageOut
 
 _STATUS_PATTERN = f"^({'|'.join(STRATEGY_STATUSES)})$"
 _PILLAR_PATTERN = f"^({'|'.join(PILLARS)})$"
@@ -125,3 +126,15 @@ class StrategyBoard(BaseModel):
     week_tasks: list[StrategyTaskOut]
     today_tasks: list[StrategyTaskOut]
     headline: str
+
+
+class DigestRequest(BaseModel):
+    # Where to send the weekly plan; defaults to the configured Gmail address.
+    to_email: EmailStr | None = None
+    week_start: date | None = None
+
+
+class DigestResult(BaseModel):
+    subject: str
+    mode: str  # "live" | "offline"
+    message: EmailMessageOut

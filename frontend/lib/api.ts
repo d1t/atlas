@@ -424,6 +424,11 @@ export const api = {
     }),
   getStrategyBoard: (id: number) =>
     request<StrategyBoard>(`/api/v1/strategy/${id}/board`),
+  sendStrategyDigest: (id: number, to_email?: string) =>
+    request<DigestResult>(`/api/v1/strategy/${id}/digest`, {
+      method: "POST",
+      json: { to_email: to_email || null },
+    }),
   createStrategyTask: (id: number, payload: StrategyTaskInput) =>
     request<StrategyTask>(`/api/v1/strategy/${id}/tasks`, {
       method: "POST",
@@ -726,6 +731,12 @@ export type ReplySyncResult = {
   matched: number;
   new_messages: EmailMessage[];
   mode: "live" | "offline";
+};
+
+export type DigestResult = {
+  subject: string;
+  mode: "live" | "offline";
+  message: EmailMessage;
 };
 
 // --- Strategy engine types ---

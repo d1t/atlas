@@ -11,9 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
 from app.core.deps import get_current_user
+from app.integrations.gmail import get_gmail_client
 from app.models.strategy import Strategy, StrategyTask
 from app.models.user import User
+from app.schemas.email import EmailMessageOut
 from app.schemas.strategy import (
+    DigestRequest,
+    DigestResult,
     GeneratePlanRequest,
     StrategyBoard,
     StrategyCreate,
@@ -145,15 +149,7 @@ async def get_board(
     ).scalars().all()
     today_tasks = strategy_service.select_today_tasks(list(week_tasks))
 
-    behind = [p for p in pillars if p.status in ("behind", "idle")]
-    if behind:
-        headline = (
-            "Focus this week: "
-            + ", ".join(p.label for p in behind[:3])
-            + " need attention."
-        )
-    else:
-        headline = "All four pillars on track — keep executing the cadence."
+    headline = strategy_service.compose_headline(pillars)
 
     return StrategyBoard(
         strategy=StrategyOut.model_validate(obj),
@@ -162,6 +158,45 @@ async def get_board(
         week_tasks=[StrategyTaskOut.model_validate(t) for t in week_tasks],
         today_tasks=[StrategyTaskOut.model_validate(t) for t in today_tasks],
         headline=headline,
+    )
+
+
+@router.post("/{strategy_id}/digest", response_model=DigestResult)
+async def send_digest(
+    strategy_id: int,
+    payload: DigestRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> DigestResult:
+    """Email this week's plan (pillars + today + cadence) to the trader.
+
+    Recipient defaults to the configured Gmail address; when Gmail is offline
+    the digest is recorded without transmitting, so it stays testable.
+    """
+    obj = await _get_strategy(db, strategy_id)
+    to_email = (
+        str(payload.to_email)
+        if payload and payload.to_email
+        else get_gmail_client().address or None
+    )
+    if not to_email:
+        raise HTTPException(
+            status_code=400,
+            detail="No recipient — pass to_email or configure a Gmail address.",
+        )
+    msg, subject, mode = await strategy_service.send_weekly_digest(
+        db,
+        obj,
+        to_email=to_email,
+        week_start=payload.week_start if payload else None,
+        user_id=user.id,
+    )
+    if msg.status == "failed":
+        raise HTTPException(status_code=502, detail=msg.error or "Digest send failed")
+    return DigestResult(
+        subject=subject,
+        mode=mode,
+        message=EmailMessageOut.model_validate(msg),
     )
 
 

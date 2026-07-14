@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai import get_llm
+from app.models.email import EmailMessage
 from app.models.opportunity import BuyerLead, Opportunity, SupplierLead
 from app.models.strategy import (
     PILLAR_LABELS,
@@ -29,6 +30,7 @@ from app.models.strategy import (
     StrategyTask,
 )
 from app.schemas.strategy import PillarProgress
+from app.services import email_service
 from app.services import matching as matching_service
 from app.services import next_action as next_action_service
 
@@ -43,6 +45,20 @@ _DEFAULT_TARGETS = {
 }
 
 _DEAD_STATUSES = ("declined", "lost")
+
+# A lead that was contacted but has gone quiet for this many days earns a
+# follow-up task in the weekly cadence.
+_FOLLOWUP_STALE_DAYS = 3
+
+# The 1-5 bargaining stages from :mod:`app.ai.negotiation_strategy`, surfaced in
+# close-task detail so the trader knows exactly where each counterparty sits.
+_NEGOTIATION_STAGE_LABELS = {
+    1: "Cold outreach",
+    2: "First response / SCO",
+    3: "Counter-offer",
+    4: "Terms negotiation",
+    5: "Close / SPA",
+}
 
 
 # --- Planning -------------------------------------------------------------
@@ -225,6 +241,7 @@ async def generate_plan(
 
     opportunities = await _relevant_opportunities(db, strategy)
     pillars = strategy.pillars or _fallback_pillars(strategy)
+    now = datetime.now(UTC)
 
     tasks: list[StrategyTask] = []
     seen: set[tuple[str, str, int | None]] = set()
@@ -237,6 +254,8 @@ async def generate_plan(
         priority: str = "medium",
         cadence: str = "weekly",
         opportunity_id: int | None = None,
+        supplier_lead_id: int | None = None,
+        buyer_lead_id: int | None = None,
         due_offset: int = 4,
     ) -> None:
         key = (pillar, title, opportunity_id)
@@ -258,6 +277,8 @@ async def generate_plan(
                 week_start=week,
                 due_at=due,
                 opportunity_id=opportunity_id,
+                supplier_lead_id=supplier_lead_id,
+                buyer_lead_id=buyer_lead_id,
                 source="auto",
             )
         )
@@ -283,7 +304,14 @@ async def generate_plan(
             due_offset=1,
         )
 
-    # 2. Per-opportunity next-actions, classified into pillars.
+    def _is_stale(dt: datetime | None) -> bool:
+        if dt is None:
+            return True
+        aware = dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+        return (now - aware).days >= _FOLLOWUP_STALE_DAYS
+
+    # 2. Per-opportunity cadence — generic next-actions plus dedicated
+    #    buy-side outreach and deal/close tasks tied to the pipeline stage.
     for opp in opportunities:
         sup, buy = await _load_leads(db, opp.id)
         matches = matching_service.rank_pairs(opp, sup, buy)
@@ -297,6 +325,100 @@ async def generate_plan(
                 priority=rec.priority,
                 opportunity_id=opp.id,
                 due_offset=1 if rec.priority == "high" else 3,
+            )
+
+        # 2a. Buy-side outreach cadence — one demand task per live buyer lead,
+        #     stepped to where the buyer sits in the funnel.
+        for b in buy:
+            if b.status in _DEAD_STATUSES or b.status == "committed":
+                continue
+            name = b.buyer_name or f"Buyer #{b.id}"
+            if b.status == "new":
+                add(
+                    "demand",
+                    f"Open buy-side outreach to {name} — {opp.title}",
+                    detail=(
+                        "New buyer lead — send an intro, gauge appetite and confirm "
+                        "target price + volume to underwrite off-take."
+                    ),
+                    priority="high",
+                    opportunity_id=opp.id,
+                    buyer_lead_id=b.id,
+                    due_offset=1,
+                )
+            elif b.status == "contacted" and _is_stale(b.last_contacted_at):
+                add(
+                    "demand",
+                    f"Follow up {name} on interest — {opp.title}",
+                    detail=(
+                        "Contacted but not yet engaged — chase for a firm bid and "
+                        "their target price band."
+                    ),
+                    priority="medium",
+                    opportunity_id=opp.id,
+                    buyer_lead_id=b.id,
+                    due_offset=2,
+                )
+            elif b.status == "engaged":
+                add(
+                    "demand",
+                    f"Convert {name} to a committed off-take — {opp.title}",
+                    detail=(
+                        "Buyer is engaged — push for a firm bid / LOI to lock the "
+                        "demand side before committing supply."
+                    ),
+                    priority="high",
+                    opportunity_id=opp.id,
+                    buyer_lead_id=b.id,
+                    due_offset=2,
+                )
+
+        # 2b. Deal / close cadence — execution tasks driven by each supplier
+        #     lead's negotiation stage and the opportunity's pipeline status.
+        for s in sup:
+            if s.status in _DEAD_STATUSES:
+                continue
+            stage = s.negotiation_stage or 1
+            name = s.supplier_name or f"Supplier #{s.id}"
+            label = _NEGOTIATION_STAGE_LABELS.get(stage, f"stage {stage}")
+            if stage >= 4:
+                add(
+                    "execution",
+                    f"Drive {name} to SPA/LC close — {opp.title}",
+                    detail=(
+                        f"Supplier at '{label}'. Issue the next commitment: circulate "
+                        "the draft SPA, agree LC terms and lock the delivery window."
+                    ),
+                    priority="high",
+                    opportunity_id=opp.id,
+                    supplier_lead_id=s.id,
+                    due_offset=2,
+                )
+            elif stage == 3:
+                add(
+                    "execution",
+                    f"Counter {name} and narrow terms — {opp.title}",
+                    detail=(
+                        "Counter-offer stage — anchor price at the midpoint and close "
+                        "open terms (incoterms, payment instrument, inspection)."
+                    ),
+                    priority="medium",
+                    opportunity_id=opp.id,
+                    supplier_lead_id=s.id,
+                    due_offset=3,
+                )
+
+        if opp.status == "matched":
+            add(
+                "execution",
+                f"Promote match to a Deal & issue SPA — {opp.title}",
+                detail=(
+                    "Opportunity is matched — formalize the supplier x buyer pair into "
+                    "a Deal and circulate the SPA + IMFPA for signature."
+                ),
+                priority="high",
+                opportunity_id=opp.id,
+                due_offset=1,
             )
 
     # 3. Standing execution nudge if any opportunity is negotiating/matched.
@@ -422,3 +544,106 @@ def select_today_tasks(tasks: list[StrategyTask]) -> list[StrategyTask]:
     order = {"high": 0, "medium": 1, "low": 2}
     picked.sort(key=lambda t: (order.get(t.priority, 3), t.due_at or datetime.max.replace(tzinfo=UTC)))
     return picked[:8]
+
+
+def compose_headline(pillars: list[PillarProgress]) -> str:
+    """One-line summary of where the week stands, shared by board + digest."""
+    behind = [p for p in pillars if p.status in ("behind", "idle")]
+    if behind:
+        return (
+            "Focus this week: "
+            + ", ".join(p.label for p in behind[:3])
+            + " need attention."
+        )
+    return "All four pillars on track — keep executing the cadence."
+
+
+# --- Weekly digest --------------------------------------------------------
+
+
+def build_digest(
+    strategy: Strategy,
+    week_start: date,
+    pillars: list[PillarProgress],
+    today_tasks: list[StrategyTask],
+    week_tasks: list[StrategyTask],
+) -> tuple[str, str]:
+    """Render this week's plan as an email (subject, plain-text body)."""
+    subject = f"[Atlas] Weekly plan — {strategy.title} (week of {week_start})"
+
+    lines: list[str] = []
+    if strategy.north_star:
+        lines += [f"North star: {strategy.north_star}", ""]
+    lines += [compose_headline(pillars), ""]
+
+    lines.append("PILLAR PROGRESS")
+    for p in pillars:
+        lines.append(
+            f"  - {p.label}: {p.actual:.0f}/{p.target:.0f} {p.kpi or 'units'} · "
+            f"{p.tasks_done}/{p.tasks_total} tasks · {p.status.replace('_', ' ')}"
+        )
+    lines.append("")
+
+    lines.append("TODAY'S FOCUS")
+    if today_tasks:
+        for t in today_tasks:
+            lines.append(f"  - [{t.priority}] {t.title}")
+    else:
+        lines.append("  - (nothing queued today)")
+    lines.append("")
+
+    lines.append("THIS WEEK BY PILLAR")
+    for pillar in PILLARS:
+        p_tasks = [t for t in week_tasks if t.pillar == pillar]
+        if not p_tasks:
+            continue
+        lines.append(f"{PILLAR_LABELS[pillar]}:")
+        for t in p_tasks:
+            mark = "x" if t.status in ("done", "skipped") else " "
+            lines.append(f"  [{mark}] {t.title}")
+        lines.append("")
+
+    body = "\n".join(lines).strip() + "\n"
+    return subject, body
+
+
+async def send_weekly_digest(
+    db: AsyncSession,
+    strategy: Strategy,
+    *,
+    to_email: str,
+    week_start: date | None = None,
+    user_id: int | None = None,
+) -> tuple[EmailMessage, str, str]:
+    """Compose the current week's plan and send (or offline-record) it.
+
+    Returns ``(email_message, subject, mode)`` where ``mode`` is ``"live"`` or
+    ``"offline"`` depending on whether Gmail credentials are configured.
+    """
+    week = _monday(week_start or datetime.now(UTC).date())
+    pillars = await build_pillar_progress(db, strategy, week)
+    week_tasks = (
+        await db.execute(
+            select(StrategyTask)
+            .where(
+                StrategyTask.strategy_id == strategy.id,
+                StrategyTask.week_start == week,
+            )
+            .order_by(StrategyTask.priority.asc(), StrategyTask.id.asc())
+        )
+    ).scalars().all()
+    today_tasks = select_today_tasks(list(week_tasks))
+
+    subject, body = build_digest(strategy, week, pillars, today_tasks, list(week_tasks))
+
+    client = email_service.get_gmail_client()
+    mode = "live" if client.configured else "offline"
+    msg = await email_service.send_email(
+        db,
+        to_email=to_email,
+        subject=subject,
+        body=body,
+        user_id=user_id,
+        client=client,
+    )
+    return msg, subject, mode

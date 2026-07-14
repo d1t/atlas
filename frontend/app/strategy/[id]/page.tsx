@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "../../../components/AppShell";
 import {
   api,
+  DigestResult,
   PillarKey,
   PillarProgress,
   StrategyBoard,
@@ -168,6 +169,7 @@ export default function StrategyBoardPage() {
           <button className="btn-ghost" onClick={syncReplies} disabled={busy}>
             Sync replies
           </button>
+          <DigestInline id={id} />
           <button className="btn-ghost" onClick={replanPillars} disabled={busy}>
             Re-plan pillars (AI)
           </button>
@@ -327,6 +329,69 @@ function TaskRow({
       >
         {task.priority}
       </span>
+    </div>
+  );
+}
+
+function DigestInline({ id }: { id: number }) {
+  const [open, setOpen] = useState(false);
+  const [email, setEmail] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function send() {
+    setBusy(true);
+    setErr(null);
+    setMsg(null);
+    try {
+      const res: DigestResult = await api.sendStrategyDigest(
+        id,
+        email.trim() || undefined,
+      );
+      const to = res.message.to_email || email.trim() || "the configured inbox";
+      if (res.mode === "offline") {
+        setMsg(
+          `Recorded offline (no Gmail credentials) — this week's plan would have gone to ${to}.`,
+        );
+      } else {
+        setMsg(`Weekly plan emailed to ${to}.`);
+      }
+      setOpen(false);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <div className="flex flex-col items-end gap-1">
+        <button className="btn-ghost" onClick={() => setOpen(true)} disabled={busy}>
+          Email weekly plan
+        </button>
+        {msg && <span className="text-xs text-gray-400">{msg}</span>}
+        {err && <span className="text-xs text-red-300">{err}</span>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-1">
+      <input
+        className="input py-1 text-xs"
+        placeholder="recipient (blank = Gmail addr)"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && send()}
+      />
+      <button className="btn-primary text-xs" onClick={send} disabled={busy}>
+        {busy ? "…" : "Send"}
+      </button>
+      <button className="btn-ghost text-xs" onClick={() => setOpen(false)}>
+        ✕
+      </button>
     </div>
   );
 }

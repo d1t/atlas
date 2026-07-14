@@ -155,6 +155,93 @@ async def test_task_toggle_sets_completed_at(client: AsyncClient):
     assert done["completed_at"] is not None
 
 
+async def test_buyer_cadence_and_close_tasks(client: AsyncClient):
+    h = await _auth(client)
+    s = await _mk_strategy(client, h)
+    opp = (
+        await client.post(
+            "/api/v1/opportunities",
+            headers=h,
+            json={"title": "Sugar 50k", "commodity": "sugar", "volume_mt": 50000},
+        )
+    ).json()
+
+    # A brand-new buyer lead should earn a buy-side outreach task linked to it.
+    buyer = (
+        await client.post(
+            f"/api/v1/opportunities/{opp['id']}/buyer-leads",
+            headers=h,
+            json={"buyer_name": "Lagos Foods", "email": "b@lagos.example.com"},
+        )
+    ).json()
+
+    # A supplier deep in negotiation should earn a deal/close task.
+    supplier = (
+        await client.post(
+            f"/api/v1/opportunities/{opp['id']}/supplier-leads",
+            headers=h,
+            json={"supplier_name": "Atlas Mill", "email": "m@x.example.com"},
+        )
+    ).json()
+    await client.patch(
+        f"/api/v1/opportunities/{opp['id']}/supplier-leads/{supplier['id']}",
+        headers=h,
+        json={"negotiation_stage": 4, "status": "quoted"},
+    )
+
+    tasks = (
+        await client.post(
+            f"/api/v1/strategy/{s['id']}/generate-plan", headers=h, json={}
+        )
+    ).json()
+
+    demand_for_buyer = [
+        t
+        for t in tasks
+        if t["pillar"] == "demand" and t["buyer_lead_id"] == buyer["id"]
+    ]
+    assert demand_for_buyer, "expected a buy-side outreach task linked to the buyer"
+
+    close_for_supplier = [
+        t
+        for t in tasks
+        if t["pillar"] == "execution"
+        and t["supplier_lead_id"] == supplier["id"]
+        and "SPA" in t["title"]
+    ]
+    assert close_for_supplier, "expected a deal/close task for the stage-4 supplier"
+
+
+async def test_send_weekly_digest_offline(client: AsyncClient):
+    h = await _auth(client)
+    s = await _mk_strategy(client, h)
+    await client.post(
+        f"/api/v1/strategy/{s['id']}/generate-plan", headers=h, json={}
+    )
+
+    r = await client.post(
+        f"/api/v1/strategy/{s['id']}/digest",
+        headers=h,
+        json={"to_email": "trader@atlas.example.com"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # No Gmail creds in tests => offline mode, recorded but not transmitted.
+    assert body["mode"] == "offline"
+    assert body["message"]["status"] == "offline"
+    assert body["message"]["direction"] == "outbound"
+    assert "Weekly plan" in body["subject"]
+    assert body["message"]["to_email"] == "trader@atlas.example.com"
+
+
+async def test_digest_requires_recipient_when_offline(client: AsyncClient):
+    h = await _auth(client)
+    s = await _mk_strategy(client, h)
+    r = await client.post(f"/api/v1/strategy/{s['id']}/digest", headers=h, json={})
+    # Offline + no configured Gmail address + no explicit recipient => 400.
+    assert r.status_code == 400, r.text
+
+
 async def test_manual_task_survives_regeneration(client: AsyncClient):
     h = await _auth(client)
     s = await _mk_strategy(client, h)
