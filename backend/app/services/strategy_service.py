@@ -607,6 +607,265 @@ def build_digest(
     return subject, body
 
 
+# --- Per-task email execution --------------------------------------------
+
+
+def _fmt_money(value: float | None, currency: str = "USD") -> str:
+    return f"{currency} {value:,.0f}/MT" if value else "your best price"
+
+
+def _opp_context_line(opp: Opportunity | None) -> str:
+    if opp is None:
+        return ""
+    bits: list[str] = [opp.commodity]
+    if opp.volume_mt:
+        bits.append(f"{opp.volume_mt:,.0f} MT")
+    if opp.destination_country:
+        bits.append(f"delivered {opp.destination_country}")
+    if opp.incoterms:
+        bits.append(opp.incoterms)
+    return ", ".join(b for b in bits if b)
+
+
+def _supplier_email_template(
+    strategy: Strategy,
+    opp: Opportunity | None,
+    lead: SupplierLead,
+    from_name: str,
+) -> tuple[str, str]:
+    name = lead.contact_name or lead.supplier_name or "there"
+    company = lead.supplier_name or "your company"
+    commodity = (opp.commodity if opp else None) or strategy.commodity or "the commodity"
+    ctx = _opp_context_line(opp)
+    stage = lead.negotiation_stage or 1
+    dest = (opp.destination_country if opp else None) or strategy.destination_region
+
+    if stage <= 1:
+        subject = f"{commodity} enquiry — supply from {company}"
+        body = (
+            f"Dear {name},\n\n"
+            f"We are actively sourcing {commodity} for a confirmed programme"
+            f"{f' ({ctx})' if ctx else ''}. Your firm came up as a credible origin "
+            f"supplier and I'd like to open a dialogue.\n\n"
+            "To move quickly, could you share:\n"
+            "  1. A soft corporate offer (SCO) with your FOB/CFR price per MT\n"
+            "  2. Available monthly volume and minimum order quantity\n"
+            "  3. Payment terms and preferred incoterms\n"
+            "  4. Origin, specs and earliest loading window\n\n"
+            "We work on an NCNDA basis and can move to SPA quickly once terms line "
+            "up. Looking forward to your offer.\n\n"
+            f"Best regards,\n{from_name}"
+        )
+    elif stage == 2:
+        subject = f"Re: {commodity} offer — next steps"
+        body = (
+            f"Dear {name},\n\n"
+            "Thank you for the offer — it's under review against our target. Before "
+            "we counter, please confirm:\n"
+            "  1. Firm validity of the quoted price and volume\n"
+            "  2. Payment instrument you can work with (LC at sight / DLC)\n"
+            "  3. Inspection (SGS/Intertek) at loading and who bears cost\n"
+            "  4. Proof of product / recent SGS certificate\n\n"
+            "Once confirmed we'll come back with a firm counter and proceed to "
+            "NCNDA + draft SPA.\n\n"
+            f"Best regards,\n{from_name}"
+        )
+    elif stage == 3:
+        target = _fmt_money(
+            (opp.target_price_max if opp else None) or lead.price_mt,
+            (opp.currency if opp else None) or "USD",
+        )
+        subject = f"Re: {commodity} — our counter"
+        body = (
+            f"Dear {name},\n\n"
+            "Thanks for working through the terms. To close the gap we can commit at "
+            f"{target} on the volume discussed, subject to the following:\n"
+            "  1. Incoterms and delivery window fixed in the SPA\n"
+            "  2. Payment via LC at sight against shipping documents\n"
+            "  3. SGS inspection at load port, split 50/50\n\n"
+            "If that works in principle, we'll circulate the draft SPA today so we "
+            "can lock this in this week.\n\n"
+            f"Best regards,\n{from_name}"
+        )
+    else:
+        subject = f"{commodity} — draft SPA & LC terms to close"
+        body = (
+            f"Dear {name},\n\n"
+            "We're aligned on commercials — let's close. Next steps from our side:\n"
+            "  1. We circulate the draft SPA for your review\n"
+            "  2. We agree the LC terms and issuing bank\n"
+            f"  3. We lock the delivery window{f' to {dest}' if dest else ''}\n\n"
+            "Please confirm the signatory and banking coordinates so we can finalise "
+            "the SPA and open the instrument without delay.\n\n"
+            f"Best regards,\n{from_name}"
+        )
+    return subject, body
+
+
+def _buyer_email_template(
+    strategy: Strategy,
+    opp: Opportunity | None,
+    lead: BuyerLead,
+    from_name: str,
+) -> tuple[str, str]:
+    name = lead.buyer_name or "there"
+    commodity = (opp.commodity if opp else None) or strategy.commodity or "the commodity"
+    ctx = _opp_context_line(opp)
+    status = lead.status
+
+    if status in ("new",):
+        subject = f"{commodity} supply — off-take opportunity"
+        body = (
+            f"Dear {name},\n\n"
+            f"We have secured/are securing competitive {commodity} supply"
+            f"{f' ({ctx})' if ctx else ''} and are lining up committed off-take.\n\n"
+            "To see if there's a fit, could you share:\n"
+            "  1. Your current appetite (volume per month)\n"
+            "  2. Target landed price per MT\n"
+            "  3. Delivery point and preferred incoterms\n\n"
+            "If the numbers work we can move to a firm offer and LOI quickly.\n\n"
+            f"Best regards,\n{from_name}"
+        )
+    elif status == "contacted":
+        subject = f"Re: {commodity} supply — following up"
+        body = (
+            f"Dear {name},\n\n"
+            "Just circling back on the "
+            f"{commodity} programme. Are you able to share a firm bid and your "
+            "target price band? If it lines up with our origin cost we can lock a "
+            "volume for you and issue a firm offer.\n\n"
+            f"Best regards,\n{from_name}"
+        )
+    else:  # engaged / quoted / other active
+        target = _fmt_money(
+            lead.target_price_mt, (opp.currency if opp else None) or "USD"
+        )
+        subject = f"{commodity} — firm offer & LOI to commit"
+        body = (
+            f"Dear {name},\n\n"
+            "Thanks for the continued interest. We're ready to firm this up. Based on "
+            f"our discussion we can offer at around {target}. To reserve the volume "
+            "against supply, please send:\n"
+            "  1. A firm bid / LOI for the volume\n"
+            "  2. Your banking reference for the LC\n\n"
+            "On receipt we'll issue the commercial offer and proceed to contract.\n\n"
+            f"Best regards,\n{from_name}"
+        )
+    return subject, body
+
+
+async def draft_task_email(
+    db: AsyncSession, strategy: Strategy, task: StrategyTask
+) -> dict:
+    """Draft a review-ready email for a single strategy task.
+
+    Resolves the recipient from the task's linked supplier/buyer lead and builds
+    a stage-aware subject + body. Returns a dict shaped for ``TaskEmailDraft``.
+    """
+    client = email_service.get_gmail_client()
+    from_name = client.settings.gmail_from_name or "The Atlas Trade Desk"
+
+    opp = (
+        await db.get(Opportunity, task.opportunity_id)
+        if task.opportunity_id is not None
+        else None
+    )
+
+    supplier = (
+        await db.get(SupplierLead, task.supplier_lead_id)
+        if task.supplier_lead_id is not None
+        else None
+    )
+    buyer = (
+        await db.get(BuyerLead, task.buyer_lead_id)
+        if task.buyer_lead_id is not None
+        else None
+    )
+
+    to_email: str | None = None
+    to_name: str | None = None
+    reason: str | None = None
+
+    if supplier is not None:
+        to_name = supplier.contact_name or supplier.supplier_name
+        to_email = supplier.email
+        subject, body = _supplier_email_template(strategy, opp, supplier, from_name)
+        if not to_email:
+            reason = "This supplier lead has no email address — add one to send."
+    elif buyer is not None:
+        to_name = buyer.buyer_name
+        to_email = buyer.email
+        subject, body = _buyer_email_template(strategy, opp, buyer, from_name)
+        if not to_email:
+            reason = "This buyer lead has no email address — add one to send."
+    else:
+        # No counterparty linked — draft from the task itself so the user can
+        # still edit + fill a recipient.
+        subject = task.title
+        detail = task.detail or "Follow up on this action."
+        body = (
+            "Hi,\n\n"
+            f"{detail}\n\n"
+            f"Best regards,\n{from_name}"
+        )
+        reason = "This task has no linked counterparty — add a recipient to send."
+
+    return {
+        "task_id": task.id,
+        "to_email": to_email,
+        "to_name": to_name,
+        "subject": subject,
+        "body": body,
+        "opportunity_id": task.opportunity_id,
+        "supplier_lead_id": task.supplier_lead_id,
+        "buyer_lead_id": task.buyer_lead_id,
+        "mode": "live" if client.configured else "offline",
+        "can_send": bool(to_email),
+        "reason": reason,
+    }
+
+
+async def send_task_email(
+    db: AsyncSession,
+    strategy: Strategy,
+    task: StrategyTask,
+    *,
+    to_email: str,
+    subject: str,
+    body: str,
+    complete_task: bool = True,
+    user_id: int | None = None,
+) -> tuple[EmailMessage, StrategyTask, str]:
+    """Send (or offline-record) a task's email and tick the task off.
+
+    Links the message to the task's opportunity/lead, and — when the send
+    succeeds and ``complete_task`` is set — marks the task ``done``.
+    Returns ``(email_message, task, mode)``.
+    """
+    client = email_service.get_gmail_client()
+    mode = "live" if client.configured else "offline"
+
+    msg = await email_service.send_email(
+        db,
+        to_email=to_email,
+        subject=subject,
+        body=body,
+        user_id=user_id,
+        opportunity_id=task.opportunity_id,
+        supplier_lead_id=task.supplier_lead_id,
+        buyer_lead_id=task.buyer_lead_id,
+        client=client,
+    )
+
+    if complete_task and msg.status in ("sent", "offline"):
+        task.status = "done"
+        task.completed_at = datetime.now(UTC)
+        await db.commit()
+        await db.refresh(task)
+
+    return msg, task, mode
+
+
 async def send_weekly_digest(
     db: AsyncSession,
     strategy: Strategy,

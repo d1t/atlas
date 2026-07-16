@@ -26,6 +26,9 @@ from app.schemas.strategy import (
     StrategyTaskOut,
     StrategyTaskUpdate,
     StrategyUpdate,
+    TaskEmailDraft,
+    TaskEmailResult,
+    TaskEmailSend,
 )
 from app.services import strategy_service
 
@@ -258,3 +261,60 @@ async def delete_task(
         raise HTTPException(status_code=404, detail="Task not found")
     await db.delete(task)
     await db.commit()
+
+
+async def _get_task(db: AsyncSession, strategy_id: int, task_id: int) -> StrategyTask:
+    task = await db.get(StrategyTask, task_id)
+    if task is None or task.strategy_id != strategy_id:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
+
+
+@router.get(
+    "/{strategy_id}/tasks/{task_id}/draft-email", response_model=TaskEmailDraft
+)
+async def draft_task_email(
+    strategy_id: int,
+    task_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> TaskEmailDraft:
+    """Draft a review-ready email for a task, prefilled from its linked lead."""
+    strategy = await _get_strategy(db, strategy_id)
+    task = await _get_task(db, strategy_id, task_id)
+    draft = await strategy_service.draft_task_email(db, strategy, task)
+    return TaskEmailDraft(**draft)
+
+
+@router.post(
+    "/{strategy_id}/tasks/{task_id}/send-email",
+    response_model=TaskEmailResult,
+    status_code=201,
+)
+async def send_task_email(
+    strategy_id: int,
+    task_id: int,
+    payload: TaskEmailSend,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> TaskEmailResult:
+    """Send (or offline-record) a task's email and tick the task off."""
+    strategy = await _get_strategy(db, strategy_id)
+    task = await _get_task(db, strategy_id, task_id)
+    msg, task, mode = await strategy_service.send_task_email(
+        db,
+        strategy,
+        task,
+        to_email=str(payload.to_email),
+        subject=payload.subject,
+        body=payload.body,
+        complete_task=payload.complete_task,
+        user_id=user.id,
+    )
+    if msg.status == "failed":
+        raise HTTPException(status_code=502, detail=msg.error or "Email send failed")
+    return TaskEmailResult(
+        mode=mode,
+        message=EmailMessageOut.model_validate(msg),
+        task=StrategyTaskOut.model_validate(task),
+    )

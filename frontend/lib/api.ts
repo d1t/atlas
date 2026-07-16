@@ -454,6 +454,15 @@ export const api = {
     }),
   deleteStrategyTask: (id: number, taskId: number) =>
     request<void>(`/api/v1/strategy/${id}/tasks/${taskId}`, { method: "DELETE" }),
+  draftTaskEmail: (id: number, taskId: number) =>
+    request<TaskEmailDraft>(
+      `/api/v1/strategy/${id}/tasks/${taskId}/draft-email`,
+    ),
+  sendTaskEmail: (id: number, taskId: number, payload: TaskEmailSendInput) =>
+    request<TaskEmailResult>(
+      `/api/v1/strategy/${id}/tasks/${taskId}/send-email`,
+      { method: "POST", json: payload },
+    ),
 };
 
 export type CommodityInfo = {
@@ -836,6 +845,33 @@ export type StrategyTask = {
   source: string;
   completed_at: string | null;
   created_at: string | null;
+};
+
+export type TaskEmailDraft = {
+  task_id: number;
+  to_email: string | null;
+  to_name: string | null;
+  subject: string;
+  body: string;
+  opportunity_id: number | null;
+  supplier_lead_id: number | null;
+  buyer_lead_id: number | null;
+  mode: "live" | "offline";
+  can_send: boolean;
+  reason: string | null;
+};
+
+export type TaskEmailSendInput = {
+  to_email: string;
+  subject: string;
+  body: string;
+  complete_task?: boolean;
+};
+
+export type TaskEmailResult = {
+  mode: "live" | "offline";
+  message: EmailMessage;
+  task: StrategyTask;
 };
 
 export type PillarProgress = {

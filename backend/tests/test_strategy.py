@@ -242,6 +242,92 @@ async def test_digest_requires_recipient_when_offline(client: AsyncClient):
     assert r.status_code == 400, r.text
 
 
+async def test_draft_and_send_task_email_ticks_off(client: AsyncClient):
+    h = await _auth(client)
+    s = await _mk_strategy(client, h)
+    opp = (
+        await client.post(
+            "/api/v1/opportunities",
+            headers=h,
+            json={"title": "Sugar 50k", "commodity": "sugar", "volume_mt": 50000},
+        )
+    ).json()
+    buyer = (
+        await client.post(
+            f"/api/v1/opportunities/{opp['id']}/buyer-leads",
+            headers=h,
+            json={"buyer_name": "Lagos Foods", "email": "buyer@lagos.example.com"},
+        )
+    ).json()
+
+    tasks = (
+        await client.post(
+            f"/api/v1/strategy/{s['id']}/generate-plan", headers=h, json={}
+        )
+    ).json()
+    task = next(t for t in tasks if t["buyer_lead_id"] == buyer["id"])
+
+    # Draft resolves the recipient from the linked buyer lead.
+    draft = (
+        await client.get(
+            f"/api/v1/strategy/{s['id']}/tasks/{task['id']}/draft-email", headers=h
+        )
+    ).json()
+    assert draft["to_email"] == "buyer@lagos.example.com"
+    assert draft["can_send"] is True
+    assert draft["subject"]
+    assert draft["body"]
+    assert draft["mode"] == "offline"
+
+    # Sending offline-records the email and ticks the task off.
+    sent = await client.post(
+        f"/api/v1/strategy/{s['id']}/tasks/{task['id']}/send-email",
+        headers=h,
+        json={
+            "to_email": draft["to_email"],
+            "subject": draft["subject"],
+            "body": draft["body"],
+        },
+    )
+    assert sent.status_code == 201, sent.text
+    body = sent.json()
+    assert body["mode"] == "offline"
+    assert body["message"]["status"] == "offline"
+    assert body["message"]["buyer_lead_id"] == buyer["id"]
+    assert body["task"]["status"] == "done"
+    assert body["task"]["completed_at"] is not None
+
+    # And it shows up in the outbox for that buyer lead.
+    emails = (
+        await client.get(
+            f"/api/v1/email?buyer_lead_id={buyer['id']}", headers=h
+        )
+    ).json()
+    assert any(m["subject"] == draft["subject"] for m in emails)
+
+
+async def test_draft_task_email_without_recipient(client: AsyncClient):
+    h = await _auth(client)
+    s = await _mk_strategy(client, h)
+    # A manual task with no linked lead can't be sent until a recipient is added.
+    task = (
+        await client.post(
+            f"/api/v1/strategy/{s['id']}/tasks",
+            headers=h,
+            json={"pillar": "origination", "title": "Frame a new trade idea"},
+        )
+    ).json()
+    draft = (
+        await client.get(
+            f"/api/v1/strategy/{s['id']}/tasks/{task['id']}/draft-email", headers=h
+        )
+    ).json()
+    assert draft["to_email"] is None
+    assert draft["can_send"] is False
+    assert draft["reason"]
+    assert draft["subject"]
+
+
 async def test_manual_task_survives_regeneration(client: AsyncClient):
     h = await _auth(client)
     s = await _mk_strategy(client, h)
