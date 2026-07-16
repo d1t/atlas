@@ -138,3 +138,33 @@ class DigestResult(BaseModel):
     subject: str
     mode: str  # "live" | "offline"
     message: EmailMessageOut
+
+
+class TaskEmailDraft(BaseModel):
+    """A review-ready email drafted for a single strategy task."""
+
+    task_id: int
+    to_email: str | None
+    to_name: str | None
+    subject: str
+    body: str
+    opportunity_id: int | None
+    supplier_lead_id: int | None
+    buyer_lead_id: int | None
+    mode: str  # "live" | "offline"
+    can_send: bool
+    reason: str | None = None
+
+
+class TaskEmailSend(BaseModel):
+    to_email: EmailStr
+    subject: str
+    body: str
+    # Tick the task off once the send succeeds / is offline-recorded.
+    complete_task: bool = True
+
+
+class TaskEmailResult(BaseModel):
+    mode: str  # "live" | "offline"
+    message: EmailMessageOut
+    task: StrategyTaskOut
