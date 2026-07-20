@@ -349,3 +349,151 @@ async def test_manual_task_survives_regeneration(client: AsyncClient):
     ).json()
     ids = {t["id"] for t in board["week_tasks"]}
     assert manual["id"] in ids
+
+
+async def test_generic_task_draft_is_real_outreach(client: AsyncClient):
+    """A task with no linked lead should draft a *sendable* outreach that
+    executes the task — not an email restating the to-do to a stranger."""
+    h = await _auth(client)
+    s = await _mk_strategy(client, h)
+    task = (
+        await client.post(
+            f"/api/v1/strategy/{s['id']}/tasks",
+            headers=h,
+            json={
+                "pillar": "origination",
+                "title": "Originate 2 new sugar opportunities",
+                "detail": "Only 1 active opportunity vs target 3.",
+            },
+        )
+    ).json()
+    draft = (
+        await client.get(
+            f"/api/v1/strategy/{s['id']}/tasks/{task['id']}/draft-email", headers=h
+        )
+    ).json()
+    # It must not just parrot the task detail back as the email body.
+    assert task["detail"] not in draft["body"]
+    assert "sugar" in draft["body"].lower()
+    assert draft["body"].strip().startswith("Dear")
+    assert draft["to_email"] is None
+    assert draft["can_send"] is False
+
+
+async def _mk_sourcing_task(client: AsyncClient, h: dict, s: dict) -> tuple[dict, dict]:
+    opp = (
+        await client.post(
+            "/api/v1/opportunities",
+            headers=h,
+            json={
+                "title": "Sugar 50k to Lagos",
+                "commodity": "sugar",
+                "volume_mt": 50000,
+                "destination_country": "Nigeria",
+            },
+        )
+    ).json()
+    task = (
+        await client.post(
+            f"/api/v1/strategy/{s['id']}/tasks",
+            headers=h,
+            json={
+                "pillar": "supply",
+                "title": "Source 3 more suppliers",
+                "opportunity_id": opp["id"],
+            },
+        )
+    ).json()
+    return opp, task
+
+
+async def test_source_suppliers_ranks_and_drafts_rfqs(client: AsyncClient):
+    h = await _auth(client)
+    s = await _mk_strategy(client, h)
+    _opp, task = await _mk_sourcing_task(client, h, s)
+
+    r = await client.get(
+        f"/api/v1/strategy/{s['id']}/tasks/{task['id']}/source-suppliers?limit=4",
+        headers=h,
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["commodity"] == "sugar"
+    assert data["country"] == "Brazil"
+    assert data["mode"] == "offline"
+
+    cands = data["candidates"]
+    assert 1 <= len(cands) <= 4
+    # Ranked most-credible first.
+    scores = [c["credibility_score"] for c in cands]
+    assert scores == sorted(scores, reverse=True)
+    # Each candidate carries a real RFQ, not a restated to-do.
+    for c in cands:
+        assert c["name"]
+        assert c["subject"].startswith("RFQ")
+        assert "SCO" in c["body"]
+        assert isinstance(c["red_flags"], list)
+
+
+async def test_send_sourcing_email_creates_lead_and_can_tick_off(client: AsyncClient):
+    h = await _auth(client)
+    s = await _mk_strategy(client, h)
+    opp, task = await _mk_sourcing_task(client, h, s)
+
+    cand = (
+        await client.get(
+            f"/api/v1/strategy/{s['id']}/tasks/{task['id']}/source-suppliers",
+            headers=h,
+        )
+    ).json()["candidates"][0]
+
+    # First RFQ: creates a tracked lead but leaves the task open (fan-out).
+    sent = await client.post(
+        f"/api/v1/strategy/{s['id']}/tasks/{task['id']}/send-sourcing-email",
+        headers=h,
+        json={
+            "to_email": "sales@newmill.example.com",
+            "subject": cand["subject"],
+            "body": cand["body"],
+            "supplier_name": cand["name"],
+            "country": cand["country"],
+            "website": cand["website"],
+        },
+    )
+    assert sent.status_code == 201, sent.text
+    body = sent.json()
+    assert body["mode"] == "offline"
+    assert body["message"]["status"] == "offline"
+    assert body["message"]["supplier_lead_id"] is not None
+    assert body["task"]["status"] == "todo"
+
+    # The RFQ became a tracked supplier lead on the opportunity.
+    leads = (
+        await client.get(
+            f"/api/v1/opportunities/{opp['id']}/supplier-leads", headers=h
+        )
+    ).json()
+    assert any(le["email"] == "sales@newmill.example.com" for le in leads)
+
+    # And it's in the outbox for the opportunity.
+    emails = (
+        await client.get(
+            f"/api/v1/email?opportunity_id={opp['id']}", headers=h
+        )
+    ).json()
+    assert any(m["subject"] == cand["subject"] for m in emails)
+
+    # A second RFQ with complete_task ticks the sourcing task off.
+    done = await client.post(
+        f"/api/v1/strategy/{s['id']}/tasks/{task['id']}/send-sourcing-email",
+        headers=h,
+        json={
+            "to_email": "trade@anothermill.example.com",
+            "subject": cand["subject"],
+            "body": cand["body"],
+            "supplier_name": "Another Mill",
+            "complete_task": True,
+        },
+    )
+    assert done.status_code == 201, done.text
+    assert done.json()["task"]["status"] == "done"

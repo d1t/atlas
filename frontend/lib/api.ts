@@ -463,6 +463,19 @@ export const api = {
       `/api/v1/strategy/${id}/tasks/${taskId}/send-email`,
       { method: "POST", json: payload },
     ),
+  sourceSuppliers: (id: number, taskId: number, limit = 4) =>
+    request<SourcingResult>(
+      `/api/v1/strategy/${id}/tasks/${taskId}/source-suppliers?limit=${limit}`,
+    ),
+  sendSourcingEmail: (
+    id: number,
+    taskId: number,
+    payload: SourcingEmailSendInput,
+  ) =>
+    request<TaskEmailResult>(
+      `/api/v1/strategy/${id}/tasks/${taskId}/send-sourcing-email`,
+      { method: "POST", json: payload },
+    ),
 };
 
 export type CommodityInfo = {
@@ -872,6 +885,45 @@ export type TaskEmailResult = {
   mode: "live" | "offline";
   message: EmailMessage;
   task: StrategyTask;
+};
+
+export type SourcingCandidate = {
+  name: string;
+  country: string | null;
+  website: string | null;
+  email: string | null;
+  phone: string | null;
+  contact_name: string | null;
+  type: string | null;
+  source: string | null;
+  description: string | null;
+  credibility_score: number;
+  risk_score: number;
+  red_flags: string[];
+  subject: string;
+  body: string;
+  can_send: boolean;
+  reason: string | null;
+};
+
+export type SourcingResult = {
+  task_id: number;
+  opportunity_id: number | null;
+  commodity: string;
+  country: string | null;
+  mode: "live" | "offline";
+  candidates: SourcingCandidate[];
+};
+
+export type SourcingEmailSendInput = {
+  to_email: string;
+  subject: string;
+  body: string;
+  supplier_name: string;
+  country?: string | null;
+  website?: string | null;
+  contact_name?: string | null;
+  complete_task?: boolean;
 };
 
 export type PillarProgress = {

@@ -168,3 +168,46 @@ class TaskEmailResult(BaseModel):
     mode: str  # "live" | "offline"
     message: EmailMessageOut
     task: StrategyTaskOut
+
+
+class SourcingCandidate(BaseModel):
+    """A discovered, qualified & ranked supplier with a ready-to-send RFQ."""
+
+    name: str
+    country: str | None = None
+    website: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    contact_name: str | None = None
+    type: str | None = None
+    source: str | None = None
+    description: str | None = None
+    credibility_score: int
+    risk_score: int
+    red_flags: list[str] = Field(default_factory=list)
+    subject: str
+    body: str
+    can_send: bool
+    reason: str | None = None
+
+
+class SourcingResult(BaseModel):
+    task_id: int
+    opportunity_id: int | None
+    commodity: str
+    country: str | None
+    mode: str  # "live" | "offline"
+    candidates: list[SourcingCandidate]
+
+
+class SourcingEmailSend(BaseModel):
+    to_email: EmailStr
+    subject: str
+    body: str
+    supplier_name: str
+    country: str | None = None
+    website: str | None = None
+    contact_name: str | None = None
+    # A sourcing task fans out to several candidates, so default to *not*
+    # ticking it off on each individual send.
+    complete_task: bool = False
