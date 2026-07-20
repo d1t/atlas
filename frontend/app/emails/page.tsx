@@ -8,6 +8,8 @@ import {
   GmailStatus,
   PILLAR_LABELS,
   PillarKey,
+  SourcingCandidate,
+  SourcingResult,
   Strategy,
   StrategyBoard,
   StrategyTask,
@@ -21,6 +23,12 @@ const PRIORITY_TONE: Record<string, string> = {
 };
 
 const PRIORITY_ORDER: Record<string, number> = { high: 0, medium: 1, low: 2 };
+
+// A supply-pillar task with no linked supplier lead is a "find more suppliers"
+// task — executed by searching + ranking candidates, not emailing one known lead.
+function isSourcingTask(t: StrategyTask): boolean {
+  return t.pillar === "supply" && t.supplier_lead_id == null;
+}
 
 export default function EmailsPage() {
   const [strategies, setStrategies] = useState<Strategy[]>([]);
@@ -37,6 +45,7 @@ export default function EmailsPage() {
     task: StrategyTask;
     draft: TaskEmailDraft;
   } | null>(null);
+  const [sourcing, setSourcing] = useState<StrategyTask | null>(null);
 
   const loadOutbox = useCallback(async () => {
     try {
@@ -92,6 +101,17 @@ export default function EmailsPage() {
     ? board.week_tasks.filter((t) => t.status === "done").length
     : 0;
 
+  async function openTask(task: StrategyTask) {
+    // Sourcing tasks open the discovery panel; everything else drafts an email.
+    if (isSourcingTask(task)) {
+      setError(null);
+      setNotice(null);
+      setSourcing(task);
+      return;
+    }
+    await openDraft(task);
+  }
+
   async function openDraft(task: StrategyTask) {
     if (!strategyId) return;
     setBusy(true);
@@ -112,9 +132,16 @@ export default function EmailsPage() {
     setComposer(null);
     if (strategyId) await loadBoard(strategyId);
     await loadOutbox();
-    // Execution flow: jump straight to the next pending task.
-    const next = queue.find((t) => t.id !== sentTaskId);
+    // Execution flow: jump straight to the next pending non-sourcing task.
+    const next = queue.find((t) => t.id !== sentTaskId && !isSourcingTask(t));
     if (next) await openDraft(next);
+  }
+
+  async function handleSourcingChanged(summary: string, close: boolean) {
+    setNotice(summary);
+    if (strategyId) await loadBoard(strategyId);
+    await loadOutbox();
+    if (close) setSourcing(null);
   }
 
   async function toggleTask(task: StrategyTask) {
@@ -253,7 +280,7 @@ export default function EmailsPage() {
                   key={t.id}
                   task={t}
                   disabled={busy}
-                  onDraft={() => openDraft(t)}
+                  onDraft={() => openTask(t)}
                   onToggle={() => toggleTask(t)}
                 />
               ))}
@@ -311,6 +338,15 @@ export default function EmailsPage() {
           onSent={handleSent}
         />
       )}
+
+      {sourcing && strategyId && (
+        <SourcingModal
+          strategyId={strategyId}
+          task={sourcing}
+          onClose={() => setSourcing(null)}
+          onChanged={handleSourcingChanged}
+        />
+      )}
     </AppShell>
   );
 }
@@ -326,12 +362,15 @@ function QueueRow({
   onDraft: () => void;
   onToggle: () => void;
 }) {
+  const sourcing = isSourcingTask(task);
   const linked =
     task.supplier_lead_id != null
       ? "supplier"
       : task.buyer_lead_id != null
         ? "buyer"
-        : null;
+        : sourcing
+          ? "source"
+          : null;
   return (
     <div className="flex items-start gap-2">
       <input
@@ -363,7 +402,7 @@ function QueueRow({
         </div>
       </div>
       <button className="btn-primary text-xs" onClick={onDraft} disabled={disabled}>
-        Draft email
+        {sourcing ? "Find suppliers" : "Draft email"}
       </button>
     </div>
   );
@@ -487,6 +526,265 @@ function Composer({
             {busy ? "Sending…" : complete ? "Send & tick off" : "Send"}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function credibilityTone(score: number): string {
+  if (score >= 65) return "bg-green-900/40 text-green-200";
+  if (score >= 45) return "bg-amber-900/30 text-amber-200";
+  return "bg-red-900/40 text-red-200";
+}
+
+function SourcingModal({
+  strategyId,
+  task,
+  onClose,
+  onChanged,
+}: {
+  strategyId: number;
+  task: StrategyTask;
+  onClose: () => void;
+  onChanged: (summary: string, close: boolean) => void;
+}) {
+  const [result, setResult] = useState<SourcingResult | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [selected, setSelected] = useState<number | null>(null);
+  const [sent, setSent] = useState<Record<number, string>>({});
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      setErr(null);
+      try {
+        setResult(await api.sourceSuppliers(strategyId, task.id, 4));
+      } catch (e) {
+        setErr((e as Error).message);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [strategyId, task.id]);
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4">
+      <div className="card flex max-h-[90vh] w-full max-w-2xl flex-col space-y-3 p-5">
+        <div className="flex items-start justify-between">
+          <div>
+            <h2 className="text-lg font-semibold">Find &amp; RFQ suppliers</h2>
+            <p className="text-xs text-gray-500">{task.title}</p>
+          </div>
+          <button className="btn-ghost text-xs" onClick={onClose}>
+            Close
+          </button>
+        </div>
+
+        {loading && (
+          <div className="text-sm text-gray-400">
+            Searching suppliers, qualifying &amp; ranking the most credible…
+          </div>
+        )}
+        {err && <div className="text-sm text-red-400">{err}</div>}
+
+        {result && !loading && (
+          <>
+            <p className="text-xs text-gray-500">
+              Top {result.candidates.length} of the ranked{" "}
+              {result.commodity}
+              {result.country ? ` · ${result.country}` : ""} candidates. Draft an
+              RFQ to each — sending creates a tracked supplier lead on the
+              opportunity.
+            </p>
+            <div className="flex-1 space-y-2 overflow-y-auto">
+              {result.candidates.length === 0 && (
+                <div className="text-sm text-gray-500">
+                  No candidates found for this lane.
+                </div>
+              )}
+              {result.candidates.map((c, i) => (
+                <div
+                  key={i}
+                  className="rounded-md border border-border p-2.5"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate text-sm font-medium text-gray-200">
+                          {c.name}
+                        </span>
+                        {c.source && (
+                          <span className="shrink-0 rounded bg-surface2 px-1.5 py-0.5 text-[10px] uppercase text-gray-400">
+                            {c.source}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        {[c.country, c.type, c.website, c.email || "no public email"]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </div>
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-[10px] uppercase ${credibilityTone(
+                            c.credibility_score,
+                          )}`}
+                          title="Credibility score"
+                        >
+                          cred {c.credibility_score}
+                        </span>
+                        <span className="rounded bg-gray-700/40 px-1.5 py-0.5 text-[10px] uppercase text-gray-300">
+                          risk {c.risk_score}
+                        </span>
+                        {c.red_flags.map((f) => (
+                          <span
+                            key={f}
+                            className="rounded bg-red-900/40 px-1.5 py-0.5 text-[10px] text-red-200"
+                          >
+                            {f.replace(/_/g, " ")}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      {sent[i] ? (
+                        <span className="rounded bg-green-900/40 px-2 py-1 text-[10px] uppercase text-green-200">
+                          {sent[i]}
+                        </span>
+                      ) : (
+                        <button
+                          className="btn-primary text-xs"
+                          onClick={() => setSelected(selected === i ? null : i)}
+                        >
+                          {selected === i ? "Hide" : "Draft RFQ"}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {selected === i && !sent[i] && (
+                    <RfqComposer
+                      strategyId={strategyId}
+                      taskId={task.id}
+                      candidate={c}
+                      onSent={(label, mode, close) => {
+                        setSent((s) => ({ ...s, [i]: label }));
+                        setSelected(null);
+                        onChanged(
+                          mode === "offline"
+                            ? `RFQ to ${c.name} recorded offline (no Gmail creds) — tracked as a supplier lead.`
+                            : `RFQ sent to ${c.name} — tracked as a supplier lead.`,
+                          close,
+                        );
+                      }}
+                    />
+                  )}
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RfqComposer({
+  strategyId,
+  taskId,
+  candidate,
+  onSent,
+}: {
+  strategyId: number;
+  taskId: number;
+  candidate: SourcingCandidate;
+  onSent: (label: string, mode: "live" | "offline", close: boolean) => void;
+}) {
+  const [to, setTo] = useState(candidate.email ?? "");
+  const [subject, setSubject] = useState(candidate.subject);
+  const [body, setBody] = useState(candidate.body);
+  const [complete, setComplete] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function send() {
+    if (!to.trim()) {
+      setErr("Add a recipient email address to send.");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await api.sendSourcingEmail(strategyId, taskId, {
+        to_email: to.trim(),
+        subject,
+        body,
+        supplier_name: candidate.name,
+        country: candidate.country,
+        website: candidate.website,
+        contact_name: candidate.contact_name,
+        complete_task: complete,
+      });
+      onSent(
+        res.mode === "offline" ? "recorded" : "sent",
+        res.mode,
+        res.task.status === "done",
+      );
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-2 space-y-2 border-t border-border pt-2">
+      {!candidate.email && (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-200">
+          {candidate.reason ||
+            "No public email found — add a recipient to send this RFQ."}
+        </div>
+      )}
+      <label className="block text-sm">
+        <span className="text-gray-400">To</span>
+        <input
+          className="input mt-1 w-full"
+          value={to}
+          onChange={(e) => setTo(e.target.value)}
+          placeholder="sales@supplier.com"
+        />
+      </label>
+      <label className="block text-sm">
+        <span className="text-gray-400">Subject</span>
+        <input
+          className="input mt-1 w-full"
+          value={subject}
+          onChange={(e) => setSubject(e.target.value)}
+        />
+      </label>
+      <label className="block text-sm">
+        <span className="text-gray-400">Body</span>
+        <textarea
+          className="input mt-1 w-full font-mono text-xs"
+          rows={12}
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+        />
+      </label>
+      <label className="flex items-center gap-2 text-sm text-gray-300">
+        <input
+          type="checkbox"
+          checked={complete}
+          onChange={(e) => setComplete(e.target.checked)}
+        />
+        Tick the sourcing task off after this send
+      </label>
+      {err && <div className="text-sm text-red-400">{err}</div>}
+      <div className="flex justify-end">
+        <button className="btn-primary text-xs" onClick={send} disabled={busy}>
+          {busy ? "Sending…" : "Send RFQ"}
+        </button>
       </div>
     </div>
   );

@@ -29,10 +29,13 @@ from app.models.strategy import (
     Strategy,
     StrategyTask,
 )
+from app.models.supplier import Supplier
 from app.schemas.strategy import PillarProgress
 from app.services import email_service
 from app.services import matching as matching_service
 from app.services import next_action as next_action_service
+from app.services.counterparty import CounterpartyService
+from app.services.supplier_discovery import SupplierCandidate, SupplierDiscoveryService
 
 logger = logging.getLogger("atlas.strategy")
 
@@ -627,6 +630,21 @@ def _opp_context_line(opp: Opportunity | None) -> str:
     return ", ".join(b for b in bits if b)
 
 
+def _opp_spec_line(opp: Opportunity | None) -> str:
+    """The opportunity specifics (volume / destination / incoterms) *without* the
+    commodity — for use right after the commodity name so it isn't repeated."""
+    if opp is None:
+        return ""
+    bits: list[str] = []
+    if opp.volume_mt:
+        bits.append(f"{opp.volume_mt:,.0f} MT")
+    if opp.destination_country:
+        bits.append(f"delivered {opp.destination_country}")
+    if opp.incoterms:
+        bits.append(opp.incoterms)
+    return ", ".join(bits)
+
+
 def _supplier_email_template(
     strategy: Strategy,
     opp: Opportunity | None,
@@ -754,6 +772,104 @@ def _buyer_email_template(
     return subject, body
 
 
+def is_sourcing_task(task: StrategyTask) -> bool:
+    """A supply-pillar task with no linked supplier lead — i.e. "find more
+    suppliers". These are executed by running AI Discover, ranking candidates
+    and firing an RFQ at each, rather than emailing a single known counterparty.
+    """
+    return task.pillar == "supply" and task.supplier_lead_id is None
+
+
+def _supplier_rfq_template(
+    strategy: Strategy,
+    opp: Opportunity | None,
+    supplier_name: str,
+    from_name: str,
+) -> tuple[str, str]:
+    """A ready-to-send RFQ / enquiry to a *prospective* supplier surfaced by
+    discovery (we don't have a relationship yet, so this opens the dialogue).
+    """
+    name = supplier_name or "there"
+    commodity = (opp.commodity if opp else None) or strategy.commodity or "the commodity"
+    spec = _opp_spec_line(opp)
+    origin = strategy.origin_region
+    dest = (opp.destination_country if opp else None) or strategy.destination_region
+
+    # Only add a destination clause if the spec line doesn't already carry one.
+    dest_clause = dest if dest and not (opp and opp.destination_country) else None
+    subject = f"RFQ — {commodity}" + (f", {spec}" if spec else "")
+    body = (
+        f"Dear {name},\n\n"
+        f"We are a trading desk sourcing {commodity}"
+        f"{f' ({spec})' if spec else ''}"
+        f"{f' for delivery to {dest_clause}' if dest_clause else ''} against a confirmed "
+        "programme, and your firm came up as a credible "
+        f"{origin + ' ' if origin else ''}origin supplier.\n\n"
+        "To evaluate a fit quickly, could you send a soft corporate offer (SCO) with:\n"
+        "  1. Your price per MT and incoterms (FOB / CFR)\n"
+        "  2. Available monthly volume and minimum order quantity\n"
+        "  3. Origin, product specs and earliest loading window\n"
+        "  4. Payment terms (we work LC at sight) and proof of product\n\n"
+        "We operate on an NCNDA basis and can move to SPA quickly once terms "
+        "line up. Looking forward to your offer.\n\n"
+        f"Best regards,\n{from_name}"
+    )
+    return subject, body
+
+
+def _generic_outreach_template(
+    strategy: Strategy,
+    opp: Opportunity | None,
+    task: StrategyTask,
+    from_name: str,
+) -> tuple[str, str]:
+    """A real, sendable outreach for a task with no linked counterparty — keyed
+    to the pillar so it *executes* the task rather than describing it.
+
+    The recipient is left blank for the user to fill (there's no lead to resolve).
+    """
+    commodity = (opp.commodity if opp else None) or strategy.commodity or "the commodity"
+    spec = _opp_spec_line(opp)
+    origin = strategy.origin_region
+    dest = (opp.destination_country if opp else None) or strategy.destination_region
+    dest_clause = dest if dest and not (opp and opp.destination_country) else None
+
+    if task.pillar == "demand":
+        subject = f"{commodity} supply — off-take opportunity"
+        body = (
+            "Dear buyer,\n\n"
+            f"We have secured/are securing competitive {commodity} supply"
+            f"{f' ({spec})' if spec else ''}"
+            f"{f' into {dest_clause}' if dest_clause else ''} and are lining up committed "
+            "off-take.\n\n"
+            "To see if there's a fit, could you share:\n"
+            "  1. Your current appetite (volume per month)\n"
+            "  2. Target landed price per MT\n"
+            "  3. Delivery point and preferred incoterms\n\n"
+            "If the numbers work we can move to a firm offer and LOI quickly.\n\n"
+            f"Best regards,\n{from_name}"
+        )
+    else:  # origination / execution / anything without a counterparty
+        lane = " ".join(
+            b for b in [origin, "to" if origin and dest else None, dest] if b
+        )
+        subject = f"{commodity} programme" + (f" — {lane}" if lane else "")
+        body = (
+            "Dear partner,\n\n"
+            "We run an active commodity trading desk and are building flow in "
+            f"{commodity}"
+            f"{f' on the {lane} lane' if lane else ''}"
+            f"{f' ({spec})' if spec else ''}. We're looking to originate new "
+            "supply and off-take partners.\n\n"
+            "If this is relevant to you, could you share where you sit in the "
+            "chain (origin supply, off-take demand, or intermediary), your "
+            "typical volumes, and indicative pricing? We can then frame a "
+            "concrete trade and move quickly on NCNDA terms.\n\n"
+            f"Best regards,\n{from_name}"
+        )
+    return subject, body
+
+
 async def draft_task_email(
     db: AsyncSession, strategy: Strategy, task: StrategyTask
 ) -> dict:
@@ -798,16 +914,18 @@ async def draft_task_email(
         subject, body = _buyer_email_template(strategy, opp, buyer, from_name)
         if not to_email:
             reason = "This buyer lead has no email address — add one to send."
-    else:
-        # No counterparty linked — draft from the task itself so the user can
-        # still edit + fill a recipient.
-        subject = task.title
-        detail = task.detail or "Follow up on this action."
-        body = (
-            "Hi,\n\n"
-            f"{detail}\n\n"
-            f"Best regards,\n{from_name}"
+    elif is_sourcing_task(task):
+        # A "source more suppliers" task: draft a generic RFQ, but nudge the
+        # user toward the discovery flow that finds + ranks real candidates.
+        subject, body = _supplier_rfq_template(strategy, opp, "there", from_name)
+        reason = (
+            "Use “Find suppliers” to search, rank and RFQ real candidates — "
+            "or add a recipient to send this enquiry directly."
         )
+    else:
+        # No counterparty linked — draft a real outreach that executes the task
+        # (keyed to the pillar), leaving the recipient for the user to fill.
+        subject, body = _generic_outreach_template(strategy, opp, task, from_name)
         reason = "This task has no linked counterparty — add a recipient to send."
 
     return {
@@ -864,6 +982,170 @@ async def send_task_email(
         await db.refresh(task)
 
     return msg, task, mode
+
+
+def _rank_candidates(
+    candidates: list[SupplierCandidate], cp: CounterpartyService
+) -> list[tuple[SupplierCandidate, dict]]:
+    """Score every candidate and rank by credibility (desc), then risk (asc),
+    preferring those we already have a contact email for.
+    """
+    scored: list[tuple[SupplierCandidate, dict]] = []
+    for c in candidates:
+        probe = Supplier(
+            name=c.name,
+            type=c.type,
+            country=c.country,
+            commodity=c.commodity,
+            website=c.website,
+            email=c.email,
+            description=c.description,
+        )
+        scored.append((c, cp.score(probe)))
+    scored.sort(
+        key=lambda t: (
+            -t[1]["credibility_score"],
+            t[1]["risk_score"],
+            0 if t[0].email else 1,
+        )
+    )
+    return scored
+
+
+async def source_suppliers_for_task(
+    db: AsyncSession, strategy: Strategy, task: StrategyTask, *, limit: int = 4
+) -> dict:
+    """Execute a "source more suppliers" task: run AI Discover for the
+    commodity/lane, qualify + rank the candidates and return the top ``limit``
+    each with a ready-to-send RFQ draft. Shaped for ``SourcingResult``.
+    """
+    client = email_service.get_gmail_client()
+    from_name = client.settings.gmail_from_name or "The Atlas Trade Desk"
+
+    opp = (
+        await db.get(Opportunity, task.opportunity_id)
+        if task.opportunity_id is not None
+        else None
+    )
+    commodity = (opp.commodity if opp else None) or strategy.commodity or "sugar"
+    country = strategy.origin_region
+
+    service = SupplierDiscoveryService(db)
+    found = await service.discover(
+        commodity=commodity, country=country, limit=max(limit * 3, 12)
+    )
+    cp = CounterpartyService()
+    ranked = _rank_candidates(found, cp)[:limit]
+
+    candidates: list[dict] = []
+    for c, sc in ranked:
+        subject, body = _supplier_rfq_template(strategy, opp, c.name, from_name)
+        candidates.append(
+            {
+                "name": c.name,
+                "country": c.country,
+                "website": c.website,
+                "email": c.email,
+                "phone": c.phone,
+                "contact_name": c.contact_name,
+                "type": c.type,
+                "source": c.source,
+                "description": c.description,
+                "credibility_score": sc["credibility_score"],
+                "risk_score": sc["risk_score"],
+                "red_flags": sc["red_flags"],
+                "subject": subject,
+                "body": body,
+                "can_send": bool(c.email),
+                "reason": (
+                    None
+                    if c.email
+                    else "No public email found — add a recipient to send."
+                ),
+            }
+        )
+
+    return {
+        "task_id": task.id,
+        "opportunity_id": task.opportunity_id,
+        "commodity": commodity,
+        "country": country,
+        "mode": "live" if client.configured else "offline",
+        "candidates": candidates,
+    }
+
+
+async def send_sourcing_email(
+    db: AsyncSession,
+    strategy: Strategy,
+    task: StrategyTask,
+    *,
+    to_email: str,
+    subject: str,
+    body: str,
+    supplier_name: str,
+    country: str | None = None,
+    website: str | None = None,
+    contact_name: str | None = None,
+    complete_task: bool = False,
+    user_id: int | None = None,
+) -> tuple[EmailMessage, StrategyTask, str, SupplierLead | None]:
+    """Send (or offline-record) an RFQ to a discovered supplier candidate.
+
+    When the task is tied to an opportunity, a tracked ``SupplierLead`` is
+    created so the RFQ shows in the pipeline and future replies match back to
+    it. Ticks the task off only when ``complete_task`` is set (a sourcing task
+    typically fans out to several candidates).
+    """
+    client = email_service.get_gmail_client()
+    mode = "live" if client.configured else "offline"
+
+    lead: SupplierLead | None = None
+    if task.opportunity_id is not None:
+        opp = await db.get(Opportunity, task.opportunity_id)
+        commodity = (opp.commodity if opp else None) or strategy.commodity
+        cp = CounterpartyService()
+        probe = Supplier(
+            name=supplier_name,
+            country=country,
+            commodity=commodity,
+            website=website,
+            email=to_email,
+        )
+        sc = cp.score(probe)
+        lead = SupplierLead(
+            opportunity_id=task.opportunity_id,
+            supplier_name=supplier_name,
+            country=country,
+            email=to_email,
+            contact_name=contact_name,
+            credibility_score=sc["credibility_score"],
+            status="new",
+            notes=f"Sourced via AI Discover for “{task.title}”.",
+        )
+        db.add(lead)
+        await db.flush()
+
+    msg = await email_service.send_email(
+        db,
+        to_email=to_email,
+        subject=subject,
+        body=body,
+        user_id=user_id,
+        opportunity_id=task.opportunity_id,
+        supplier_lead_id=lead.id if lead is not None else None,
+        client=client,
+    )
+
+    if complete_task and msg.status in ("sent", "offline"):
+        task.status = "done"
+        task.completed_at = datetime.now(UTC)
+        await db.commit()
+        await db.refresh(task)
+    elif lead is not None:
+        await db.refresh(lead)
+
+    return msg, task, mode, lead
 
 
 async def send_weekly_digest(

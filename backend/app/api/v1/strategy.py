@@ -19,6 +19,8 @@ from app.schemas.strategy import (
     DigestRequest,
     DigestResult,
     GeneratePlanRequest,
+    SourcingEmailSend,
+    SourcingResult,
     StrategyBoard,
     StrategyCreate,
     StrategyOut,
@@ -308,6 +310,65 @@ async def send_task_email(
         to_email=str(payload.to_email),
         subject=payload.subject,
         body=payload.body,
+        complete_task=payload.complete_task,
+        user_id=user.id,
+    )
+    if msg.status == "failed":
+        raise HTTPException(status_code=502, detail=msg.error or "Email send failed")
+    return TaskEmailResult(
+        mode=mode,
+        message=EmailMessageOut.model_validate(msg),
+        task=StrategyTaskOut.model_validate(task),
+    )
+
+
+@router.get(
+    "/{strategy_id}/tasks/{task_id}/source-suppliers", response_model=SourcingResult
+)
+async def source_suppliers(
+    strategy_id: int,
+    task_id: int,
+    limit: int = 4,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> SourcingResult:
+    """Run AI Discover for a sourcing task, rank candidates, and return the top
+    few each with a ready-to-send RFQ draft."""
+    strategy = await _get_strategy(db, strategy_id)
+    task = await _get_task(db, strategy_id, task_id)
+    data = await strategy_service.source_suppliers_for_task(
+        db, strategy, task, limit=max(1, min(limit, 10))
+    )
+    return SourcingResult(**data)
+
+
+@router.post(
+    "/{strategy_id}/tasks/{task_id}/send-sourcing-email",
+    response_model=TaskEmailResult,
+    status_code=201,
+)
+async def send_sourcing_email(
+    strategy_id: int,
+    task_id: int,
+    payload: SourcingEmailSend,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> TaskEmailResult:
+    """Send (or offline-record) an RFQ to a discovered supplier, creating a
+    tracked supplier lead on the task's opportunity."""
+    strategy = await _get_strategy(db, strategy_id)
+    task = await _get_task(db, strategy_id, task_id)
+    msg, task, mode, _lead = await strategy_service.send_sourcing_email(
+        db,
+        strategy,
+        task,
+        to_email=str(payload.to_email),
+        subject=payload.subject,
+        body=payload.body,
+        supplier_name=payload.supplier_name,
+        country=payload.country,
+        website=payload.website,
+        contact_name=payload.contact_name,
         complete_task=payload.complete_task,
         user_id=user.id,
     )
