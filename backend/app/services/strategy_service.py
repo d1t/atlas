@@ -630,6 +630,21 @@ def _opp_context_line(opp: Opportunity | None) -> str:
     return ", ".join(b for b in bits if b)
 
 
+def _opp_spec_line(opp: Opportunity | None) -> str:
+    """The opportunity specifics (volume / destination / incoterms) *without* the
+    commodity — for use right after the commodity name so it isn't repeated."""
+    if opp is None:
+        return ""
+    bits: list[str] = []
+    if opp.volume_mt:
+        bits.append(f"{opp.volume_mt:,.0f} MT")
+    if opp.destination_country:
+        bits.append(f"delivered {opp.destination_country}")
+    if opp.incoterms:
+        bits.append(opp.incoterms)
+    return ", ".join(bits)
+
+
 def _supplier_email_template(
     strategy: Strategy,
     opp: Opportunity | None,
@@ -776,16 +791,18 @@ def _supplier_rfq_template(
     """
     name = supplier_name or "there"
     commodity = (opp.commodity if opp else None) or strategy.commodity or "the commodity"
-    ctx = _opp_context_line(opp)
+    spec = _opp_spec_line(opp)
     origin = strategy.origin_region
     dest = (opp.destination_country if opp else None) or strategy.destination_region
 
-    subject = f"RFQ — {commodity}" + (f", {ctx}" if ctx else "")
+    # Only add a destination clause if the spec line doesn't already carry one.
+    dest_clause = dest if dest and not (opp and opp.destination_country) else None
+    subject = f"RFQ — {commodity}" + (f", {spec}" if spec else "")
     body = (
         f"Dear {name},\n\n"
         f"We are a trading desk sourcing {commodity}"
-        f"{f' ({ctx})' if ctx else ''}"
-        f"{f' for delivery to {dest}' if dest else ''} against a confirmed "
+        f"{f' ({spec})' if spec else ''}"
+        f"{f' for delivery to {dest_clause}' if dest_clause else ''} against a confirmed "
         "programme, and your firm came up as a credible "
         f"{origin + ' ' if origin else ''}origin supplier.\n\n"
         "To evaluate a fit quickly, could you send a soft corporate offer (SCO) with:\n"
@@ -812,17 +829,18 @@ def _generic_outreach_template(
     The recipient is left blank for the user to fill (there's no lead to resolve).
     """
     commodity = (opp.commodity if opp else None) or strategy.commodity or "the commodity"
-    ctx = _opp_context_line(opp)
+    spec = _opp_spec_line(opp)
     origin = strategy.origin_region
     dest = (opp.destination_country if opp else None) or strategy.destination_region
+    dest_clause = dest if dest and not (opp and opp.destination_country) else None
 
     if task.pillar == "demand":
         subject = f"{commodity} supply — off-take opportunity"
         body = (
             "Dear buyer,\n\n"
             f"We have secured/are securing competitive {commodity} supply"
-            f"{f' ({ctx})' if ctx else ''}"
-            f"{f' into {dest}' if dest else ''} and are lining up committed "
+            f"{f' ({spec})' if spec else ''}"
+            f"{f' into {dest_clause}' if dest_clause else ''} and are lining up committed "
             "off-take.\n\n"
             "To see if there's a fit, could you share:\n"
             "  1. Your current appetite (volume per month)\n"
@@ -841,7 +859,7 @@ def _generic_outreach_template(
             "We run an active commodity trading desk and are building flow in "
             f"{commodity}"
             f"{f' on the {lane} lane' if lane else ''}"
-            f"{f' ({ctx})' if ctx else ''}. We're looking to originate new "
+            f"{f' ({spec})' if spec else ''}. We're looking to originate new "
             "supply and off-take partners.\n\n"
             "If this is relevant to you, could you share where you sit in the "
             "chain (origin supply, off-take demand, or intermediary), your "
