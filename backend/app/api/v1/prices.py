@@ -1,11 +1,11 @@
-"""Commodity price endpoints backed by Yahoo Finance."""
+"""Commodity price endpoints backed by the multi-source futures price feed."""
 from __future__ import annotations
 
 from dataclasses import asdict
 
 from fastapi import APIRouter, HTTPException, Query
 
-from app.integrations.yahoo_finance import COMMODITIES, get_price, resolve_commodity
+from app.integrations.price_feed import COMMODITIES, get_price, resolve_commodity
 
 router = APIRouter()
 
@@ -31,7 +31,7 @@ async def list_commodities() -> dict:
 @router.get("/{commodity}")
 async def get_commodity_price(
     commodity: str,
-    refresh: bool = Query(False, description="Bypass 5-minute cache"),
+    refresh: bool = Query(False, description="Bypass the cached quote"),
 ) -> dict:
     """Return the latest futures price for ``commodity``.
 
@@ -48,7 +48,7 @@ async def get_commodity_price(
     if refresh:
         # Best-effort invalidate — avoids another import cycle by poking
         # the private cache directly.
-        from app.integrations.yahoo_finance import _cache  # noqa: PLC0415
+        from app.integrations.price_feed import _cache  # noqa: PLC0415
 
         _cache.pop(spec.ticker, None)
 
@@ -57,8 +57,8 @@ async def get_commodity_price(
         raise HTTPException(
             status_code=502,
             detail=(
-                f"Yahoo Finance did not return a price for {spec.ticker}. "
-                "Try again in a moment — upstream may be rate-limiting or down."
+                f"No price source returned a quote for {spec.ticker}. "
+                "Try again in a moment — upstreams may be rate-limiting or down."
             ),
         )
     return asdict(quote)

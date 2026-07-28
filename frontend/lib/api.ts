@@ -381,7 +381,7 @@ export const api = {
       json: payload,
     }),
 
-  // prices (Yahoo Finance)
+  // prices (CNBC primary, Yahoo fallback)
   listCommodities: () => request<{ commodities: CommodityInfo[] }>("/api/v1/prices"),
   getPrice: (commodity: string, refresh = false) =>
     request<CommodityQuote>(
@@ -500,6 +500,8 @@ export type CommodityQuote = {
   previous_close: number | null;
   change_pct: number | null;
   source: string;
+  /** True when every upstream failed and this is the last known good quote. */
+  stale: boolean;
 };
 
 // --- V2 opportunity types ---

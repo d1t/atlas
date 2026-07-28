@@ -32,6 +32,11 @@ function formatMoney(n: number | null | undefined, currency = "USD"): string {
   }).format(n);
 }
 
+const SOURCE_LABELS: Record<string, string> = {
+  cnbc: "CNBC",
+  yahoo_finance: "Yahoo Finance",
+};
+
 function deviationClass(pct: number): string {
   const a = Math.abs(pct);
   if (a <= 10) return "text-success";
@@ -117,6 +122,8 @@ export function PriceDisplay({ commodity, buyPrice, sellPrice, compact }: Props)
   const changeArrow =
     change === null || change === undefined ? "" : change >= 0 ? "▲" : "▼";
 
+  const sourceLabel = SOURCE_LABELS[quote.source] ?? quote.source;
+
   const buyDeviation =
     hasMt && buyPrice && priceMt && priceMt > 0
       ? ((buyPrice - priceMt) / priceMt) * 100
@@ -136,7 +143,7 @@ export function PriceDisplay({ commodity, buyPrice, sellPrice, compact }: Props)
           <div className="text-xs uppercase tracking-wide text-gray-500">
             {quote.display} ({quote.exchange})
           </div>
-          <div className="mt-1 flex items-baseline gap-2">
+          <div className="mt-1 flex flex-wrap items-baseline gap-2">
             <span className="text-xl font-semibold">
               {hasMt
                 ? `${formatMoney(priceMt, quote.currency)}/MT`
@@ -145,6 +152,14 @@ export function PriceDisplay({ commodity, buyPrice, sellPrice, compact }: Props)
             {change !== null && change !== undefined && (
               <span className={`text-xs ${changeColor}`}>
                 {changeArrow} {Math.abs(change).toFixed(2)}%
+              </span>
+            )}
+            {quote.stale && (
+              <span
+                className="rounded bg-yellow-400/15 px-1.5 py-0.5 text-[10px] text-yellow-400"
+                title="Every price source failed — showing the last known good quote"
+              >
+                delayed
               </span>
             )}
           </div>
@@ -189,7 +204,7 @@ export function PriceDisplay({ commodity, buyPrice, sellPrice, compact }: Props)
       )}
 
       <div className="mt-2 text-[10px] text-gray-500">
-        Last updated: {formatTimestamp(quote.timestamp)} · Yahoo Finance (reference only)
+        Last updated: {formatTimestamp(quote.timestamp)} · {sourceLabel} (reference only)
       </div>
     </div>
   );

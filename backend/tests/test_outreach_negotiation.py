@@ -277,7 +277,7 @@ async def test_document_generation_api_auto_injects_market_reference(
 
     # Stub the market data feed so the test doesn't hit the network.
     import app.api.v1.documents as docs_mod
-    from app.integrations.yahoo_finance import PriceQuote
+    from app.integrations.price_feed import PriceQuote
 
     async def fake_get_price(name: str) -> PriceQuote:
         return PriceQuote(
