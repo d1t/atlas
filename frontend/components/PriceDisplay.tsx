@@ -76,7 +76,7 @@ export function PriceDisplay({ commodity, buyPrice, sellPrice, compact }: Props)
 
   useEffect(() => {
     fetchQuote(false);
-    // Auto-refresh every 5 min to match backend cache TTL
+    // Poll periodically; the backend serves a cached quote until its TTL lapses.
     const id = setInterval(() => fetchQuote(false), 5 * 60 * 1000);
     return () => clearInterval(id);
   }, [fetchQuote]);
@@ -174,7 +174,7 @@ export function PriceDisplay({ commodity, buyPrice, sellPrice, compact }: Props)
           onClick={() => fetchQuote(true)}
           className="text-[10px] text-gray-500 hover:text-gray-300"
           disabled={loading}
-          title="Refresh now (bypass 5-min cache)"
+          title="Refresh now (bypass the cached quote)"
         >
           {loading ? "…" : "↻"}
         </button>

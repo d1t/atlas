@@ -132,7 +132,7 @@ export default function DashboardPage() {
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-semibold">Market reference prices</h2>
           <span className="text-xs text-gray-500">
-            Yahoo Finance · 5-min cache · reference only
+            Futures reference only · each quote shows its source
           </span>
         </div>
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
