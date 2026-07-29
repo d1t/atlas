@@ -83,11 +83,11 @@ AUTONOMOUS_ACTION_TYPES = frozenset(
     }
 )
 
-#: Action types that always require a human decision, however the agent is configured.
-#: These either leave the system, commit money, or destroy data.
+#: Action types that no pre-authorisation can ever cover. Accepting terms, moving money,
+#: signing, deleting and disclosing confidential material are irreversible or legally
+#: binding, so a human decides every time regardless of configuration.
 ALWAYS_APPROVED_ACTION_TYPES = frozenset(
     {
-        "send_email",
         "accept_terms",
         "commit_funds",
         "sign_document",
@@ -96,6 +96,13 @@ ALWAYS_APPROVED_ACTION_TYPES = frozenset(
         "change_strategy_target",
     }
 )
+
+#: Action types that *default* to requiring approval but which a user may pre-authorise
+#: under a narrow, revocable :class:`PreAuthorizationGrant`. ``send_email`` lives here
+#: rather than above because a follow-up on an already-approved thread — same template,
+#: same recipient, no new pricing or attachments, capped and time-boxed — is a
+#: reasonable thing to delegate. It is never delegated by default.
+PRE_AUTHORISABLE_ACTION_TYPES = frozenset({"send_email"})
 
 APPROVAL_STATUSES = ["pending", "approved", "rejected", "expired"]
 RISK_LEVELS = ["low", "medium", "high"]
@@ -235,6 +242,50 @@ class Approval(Base, TimestampMixin):
         ForeignKey("users.id", ondelete="SET NULL")
     )
     decision_reason: Mapped[str | None] = mapped_column(Text)
+
+
+class PreAuthorizationGrant(Base, TimestampMixin):
+    """A narrow, revocable standing approval for repetitive low-risk follow-ups.
+
+    Deliberately hard to widen. A grant is bound to one thread, one template and one
+    recipient, capped by count and expiry, and instantly stoppable via ``paused``. It
+    only ever covers :data:`PRE_AUTHORISABLE_ACTION_TYPES`, and every use is still
+    written to the audit log — the difference is that the agent does not wait.
+
+    Nothing creates one automatically; a user must ask for it.
+    """
+
+    __tablename__ = "pre_authorization_grants"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    strategy_id: Mapped[int] = mapped_column(
+        ForeignKey("strategies.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    created_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+    action_type: Mapped[str] = mapped_column(String(48), index=True, nullable=False)
+
+    #: The conversation this grant is confined to. A follow-up is only "the same
+    #: conversation" if it goes to the same place about the same thing.
+    thread_key: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+    recipient: Mapped[str] = mapped_column(String(255), nullable=False)
+    template_key: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    #: Fingerprint of the body a human actually approved. A materially different
+    #: draft will not match and falls back to requiring approval.
+    approved_body_hash: Mapped[str | None] = mapped_column(String(64))
+
+    max_messages: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    used_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    #: The immediate stop control. Set by the user; checked on every evaluation.
+    paused: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Evidence(Base, TimestampMixin):

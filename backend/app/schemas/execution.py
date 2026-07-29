@@ -94,6 +94,61 @@ class ApprovalDecision(BaseModel):
     reason: str | None = None
 
 
+class GrantCreate(BaseModel):
+    """Request a narrow standing authorisation for repeat follow-ups on one thread."""
+
+    action_type: str = Field(default="send_email")
+    thread_key: str
+    recipient: str
+    template_key: str
+    #: Bind the grant to specific wording; any material rewrite then needs approval.
+    approved_body: str | None = None
+    max_messages: int = Field(default=3, ge=1, le=10)
+    expires_in_days: int = Field(default=14, ge=1, le=90)
+
+
+class GrantOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    strategy_id: int
+    action_type: str
+    thread_key: str
+    recipient: str
+    template_key: str
+    max_messages: int
+    used_count: int
+    expires_at: datetime
+    paused: bool
+    revoked_at: datetime | None = None
+    created_at: datetime
+
+
+class GrantPauseRequest(BaseModel):
+    paused: bool
+
+
+class PolicyPreviewRequest(BaseModel):
+    """Ask what would happen to a draft without creating anything."""
+
+    action_type: str = Field(default="send_email")
+    recipient: str
+    subject: str = ""
+    body: str
+    thread_key: str = ""
+    template_key: str = ""
+    has_attachments: bool = False
+    materially_changed: bool = False
+
+
+class PolicyPreviewOut(BaseModel):
+    requires_approval: bool
+    reason: str
+    risk: str
+    grant_id: int | None = None
+    triggers: list[str] = Field(default_factory=list)
+
+
 class TaskNode(BaseModel):
     """A task plus its children, so the UI can render the tree in one pass."""
 

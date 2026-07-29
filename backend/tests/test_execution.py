@@ -271,3 +271,90 @@ def test_idempotency_key_is_stable_and_target_sensitive():
     c = build_idempotency_key(1, "send_email", "other@example.com")
     assert a == b, "same recipient must collide regardless of case/whitespace"
     assert a != c
+
+
+# --- Pre-authorisation grants ----------------------------------------------
+
+
+async def test_irreversible_actions_cannot_be_pre_authorised_via_the_api(client):
+    """The API refuses rather than accepting a grant that would never be honoured."""
+    headers = await _auth(client)
+    sid = await _strategy(client, headers)
+
+    r = await client.post(
+        f"/api/v1/execution/strategies/{sid}/grants",
+        headers=headers,
+        json={
+            "action_type": "commit_funds",
+            "thread_key": "t1",
+            "recipient": "cfo@atlas.example.com",
+            "template_key": "wire_v1",
+        },
+    )
+    assert r.status_code == 422, r.text
+    assert "cannot be pre-authorised" in r.json()["detail"]
+
+
+async def test_grant_lifecycle_and_pause_control(client):
+    headers = await _auth(client)
+    sid = await _strategy(client, headers)
+
+    r = await client.post(
+        f"/api/v1/execution/strategies/{sid}/grants",
+        headers=headers,
+        json={
+            "thread_key": "thread-dangote",
+            "recipient": "buyer@dangote.example.com",
+            "template_key": "followup_v1",
+            "max_messages": 2,
+            "expires_in_days": 7,
+        },
+    )
+    assert r.status_code == 201, r.text
+    grant = r.json()
+    assert grant["used_count"] == 0
+    assert grant["paused"] is False
+
+    r = await client.post(
+        f"/api/v1/execution/grants/{grant['id']}/pause",
+        headers=headers,
+        json={"paused": True},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["paused"] is True
+
+    r = await client.delete(
+        f"/api/v1/execution/grants/{grant['id']}", headers=headers
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["revoked_at"] is not None
+
+    r = await client.get(
+        f"/api/v1/execution/strategies/{sid}/audit", headers=headers
+    )
+    actions = {entry["action"] for entry in r.json()}
+    assert {"grant.created", "grant.paused", "grant.revoked"} <= actions
+
+
+async def test_policy_preview_explains_why_a_draft_is_gated(client):
+    """The UI must be able to say *why* something needs approval, not just that it does."""
+    headers = await _auth(client)
+    sid = await _strategy(client, headers)
+
+    r = await client.post(
+        f"/api/v1/execution/strategies/{sid}/policy/preview",
+        headers=headers,
+        json={
+            "recipient": "stranger@newco.example.com",
+            "subject": "Sugar offer",
+            "body": "We can supply at USD 430 per MT CFR Lagos.",
+            "thread_key": "t1",
+            "template_key": "rfq_v1",
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["requires_approval"] is True
+    assert body["risk"] == "high"
+    assert "commercial_language" in body["triggers"]
+    assert "first_contact" in body["triggers"]

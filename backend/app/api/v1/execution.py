@@ -6,6 +6,8 @@ execution layer on top.
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,12 +15,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_db
 from app.core.deps import get_current_user
 from app.models.execution import (
+    PRE_AUTHORISABLE_ACTION_TYPES,
     AgentAction,
     AgentRun,
     Approval,
     AuditLog,
     Evidence,
     KpiSnapshot,
+    PreAuthorizationGrant,
 )
 from app.models.strategy import Strategy, StrategyTask
 from app.models.user import User
@@ -31,11 +35,17 @@ from app.schemas.execution import (
     AuditLogOut,
     EvidenceCreate,
     EvidenceOut,
+    GrantCreate,
+    GrantOut,
+    GrantPauseRequest,
     KpiSnapshotOut,
+    PolicyPreviewOut,
+    PolicyPreviewRequest,
     TaskCompleteRequest,
     TaskNode,
 )
-from app.services import execution_service
+from app.services import approval_policy, execution_service
+from app.services.approval_policy import body_fingerprint
 
 router = APIRouter()
 
@@ -254,6 +264,169 @@ async def decide_approval(
     await db.commit()
     await db.refresh(approval)
     return ApprovalOut.model_validate(approval)
+
+
+@router.get("/strategies/{strategy_id}/grants", response_model=list[GrantOut])
+async def list_grants(
+    strategy_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> list[GrantOut]:
+    await _get_strategy(db, strategy_id)
+    rows = (
+        await db.execute(
+            select(PreAuthorizationGrant)
+            .where(PreAuthorizationGrant.strategy_id == strategy_id)
+            .order_by(PreAuthorizationGrant.created_at.desc())
+        )
+    ).scalars().all()
+    return [GrantOut.model_validate(r) for r in rows]
+
+
+@router.post(
+    "/strategies/{strategy_id}/grants", response_model=GrantOut, status_code=201
+)
+async def create_grant(
+    strategy_id: int,
+    payload: GrantCreate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> GrantOut:
+    """Create a standing authorisation for constrained follow-ups on one thread.
+
+    Only action types in ``PRE_AUTHORISABLE_ACTION_TYPES`` may be granted; anything
+    irreversible is refused here rather than being silently ignored at evaluation time.
+    """
+    await _get_strategy(db, strategy_id)
+    if payload.action_type not in PRE_AUTHORISABLE_ACTION_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"'{payload.action_type}' cannot be pre-authorised; it requires an "
+                "explicit decision every time."
+            ),
+        )
+
+    grant = PreAuthorizationGrant(
+        strategy_id=strategy_id,
+        created_by_id=user.id,
+        action_type=payload.action_type,
+        thread_key=payload.thread_key,
+        recipient=payload.recipient,
+        template_key=payload.template_key,
+        approved_body_hash=(
+            body_fingerprint(payload.approved_body)
+            if payload.approved_body is not None
+            else None
+        ),
+        max_messages=payload.max_messages,
+        expires_at=datetime.now(UTC) + timedelta(days=payload.expires_in_days),
+    )
+    db.add(grant)
+    await db.flush()
+    await execution_service.record_audit(
+        db,
+        strategy_id=strategy_id,
+        actor_type="human",
+        actor_id=user.id,
+        action="grant.created",
+        entity_type="pre_authorization_grant",
+        entity_id=grant.id,
+        after={
+            "action_type": grant.action_type,
+            "recipient": grant.recipient,
+            "max_messages": grant.max_messages,
+        },
+    )
+    await db.commit()
+    await db.refresh(grant)
+    return GrantOut.model_validate(grant)
+
+
+@router.post("/grants/{grant_id}/pause", response_model=GrantOut)
+async def pause_grant(
+    grant_id: int,
+    payload: GrantPauseRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> GrantOut:
+    """The immediate stop control — takes effect on the next evaluation, no wind-down."""
+    grant = await db.get(PreAuthorizationGrant, grant_id)
+    if grant is None:
+        raise HTTPException(status_code=404, detail="Grant not found")
+    grant.paused = payload.paused
+    await execution_service.record_audit(
+        db,
+        strategy_id=grant.strategy_id,
+        actor_type="human",
+        actor_id=user.id,
+        action="grant.paused" if payload.paused else "grant.resumed",
+        entity_type="pre_authorization_grant",
+        entity_id=grant.id,
+        after={"paused": payload.paused},
+    )
+    await db.commit()
+    await db.refresh(grant)
+    return GrantOut.model_validate(grant)
+
+
+@router.delete("/grants/{grant_id}", response_model=GrantOut)
+async def revoke_grant(
+    grant_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> GrantOut:
+    grant = await db.get(PreAuthorizationGrant, grant_id)
+    if grant is None:
+        raise HTTPException(status_code=404, detail="Grant not found")
+    grant.revoked_at = datetime.now(UTC)
+    await execution_service.record_audit(
+        db,
+        strategy_id=grant.strategy_id,
+        actor_type="human",
+        actor_id=user.id,
+        action="grant.revoked",
+        entity_type="pre_authorization_grant",
+        entity_id=grant.id,
+        after={"revoked": True},
+    )
+    await db.commit()
+    await db.refresh(grant)
+    return GrantOut.model_validate(grant)
+
+
+@router.post(
+    "/strategies/{strategy_id}/policy/preview", response_model=PolicyPreviewOut
+)
+async def preview_policy(
+    strategy_id: int,
+    payload: PolicyPreviewRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> PolicyPreviewOut:
+    """Show what the policy would decide for a draft, and why, without sending it."""
+    await _get_strategy(db, strategy_id)
+    decision = await approval_policy.evaluate(
+        db,
+        strategy_id=strategy_id,
+        action_type=payload.action_type,
+        email=approval_policy.EmailContext(
+            recipient=payload.recipient,
+            body=payload.body,
+            subject=payload.subject,
+            thread_key=payload.thread_key,
+            template_key=payload.template_key,
+            has_attachments=payload.has_attachments,
+            materially_changed=payload.materially_changed,
+        ),
+    )
+    return PolicyPreviewOut(
+        requires_approval=decision.requires_approval,
+        reason=decision.reason,
+        risk=decision.risk,
+        grant_id=decision.grant_id,
+        triggers=list(decision.triggers),
+    )
 
 
 @router.get("/strategies/{strategy_id}/runs", response_model=list[AgentRunOut])

@@ -10,6 +10,7 @@ from app.models.execution import (
     AuditLog,
     Evidence,
     KpiSnapshot,
+    PreAuthorizationGrant,
 )
 from app.models.opportunity import BuyerLead, Opportunity, SupplierLead
 from app.models.strategy import Strategy, StrategyTask
@@ -29,6 +30,7 @@ __all__ = [
     "EmailMessage",
     "Evidence",
     "KpiSnapshot",
+    "PreAuthorizationGrant",
     "Opportunity",
     "Strategy",
     "StrategyTask",

@@ -9,6 +9,7 @@ import pytest
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -40,6 +41,13 @@ async def _tables(engine) -> set[str]:
         return set(await conn.run_sync(lambda c: inspect(c).get_table_names()))
 
 
+def _head_revision() -> str:
+    """Read head from the migration scripts, so adding a migration doesn't edit tests."""
+    cfg = Config(str(BACKEND_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    return ScriptDirectory.from_config(cfg).get_current_head()
+
+
 async def _revision(engine) -> str | None:
     async with engine.begin() as conn:
         rows = await conn.execute(text("SELECT version_num FROM alembic_version"))
@@ -55,7 +63,7 @@ async def test_fresh_database_is_built_entirely_from_migrations(tmp_path):
         tables = await _tables(engine)
         assert "users" in tables
         assert EXECUTION_TABLES <= tables
-        assert await _revision(engine) == "0002_execution_spine"
+        assert await _revision(engine) == _head_revision()
     finally:
         await engine.dispose()
 
@@ -109,7 +117,7 @@ async def test_existing_database_upgrades_without_losing_data(tmp_path):
 
         await run_migrations(engine)
 
-        assert await _revision(engine) == "0002_execution_spine"
+        assert await _revision(engine) == _head_revision()
         assert EXECUTION_TABLES <= await _tables(engine)
 
         async with engine.begin() as conn:
@@ -159,7 +167,7 @@ async def test_upgrade_is_idempotent(tmp_path):
         first = await _tables(engine)
         await run_migrations(engine)
         assert await _tables(engine) == first
-        assert await _revision(engine) == "0002_execution_spine"
+        assert await _revision(engine) == _head_revision()
     finally:
         await engine.dispose()
 
