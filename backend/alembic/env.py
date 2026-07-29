@@ -46,7 +46,13 @@ async def run_migrations_online() -> None:
     await connectable.dispose()
 
 
-if context.is_offline_mode():
+# When the application drives migrations at startup it passes its own connection, so
+# the upgrade runs inside the transaction already open rather than dialling a second
+# one. The CLI path (``alembic upgrade head``) supplies no connection and opens its own.
+connection = config.attributes.get("connection")
+if connection is not None:
+    do_run_migrations(connection)
+elif context.is_offline_mode():
     run_migrations_offline()
 else:
     asyncio.run(run_migrations_online())
