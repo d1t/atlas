@@ -72,6 +72,26 @@ _LEAD_CONTACT_COLUMNS: dict[str, str] = {
     "contact_title": "VARCHAR(255)",
 }
 
+# Execution-spine columns on strategy_tasks: the decomposition tree, acceptance
+# criteria and evidence gating. Every column is nullable or carries a default that
+# reproduces the previous behaviour, so tasks created before this layer existed stay
+# valid: they read back as ungated, human-owned, root-level ``task`` rows.
+_TASK_EXECUTION_COLUMNS: dict[str, str] = {
+    "parent_id": "INTEGER",
+    "kind": "VARCHAR(16) DEFAULT 'task'",
+    "position": "INTEGER DEFAULT 0",
+    "depends_on_ids": "JSON DEFAULT '[]'",
+    "acceptance_criteria": "TEXT",
+    "requires_evidence": "BOOLEAN DEFAULT 0",
+    "override_reason": "TEXT",
+    "verified_by_id": "INTEGER",
+    "verified_at": "TIMESTAMP",
+    "assignee": "VARCHAR(16) DEFAULT 'human'",
+    "agent_key": "VARCHAR(64)",
+    "confidence": "FLOAT",
+    "blocked_reason": "TEXT",
+}
+
 
 async def _ensure_columns(
     conn, table: str, new_columns: dict[str, str]
@@ -125,6 +145,14 @@ async def _ensure_lead_contact_columns(conn) -> None:
     await _ensure_columns(conn, "supplier_leads", _LEAD_CONTACT_COLUMNS)
 
 
+async def _ensure_task_execution_columns(conn) -> None:
+    columns = dict(_TASK_EXECUTION_COLUMNS)
+    if conn.dialect.name == "postgresql":
+        # SQLite accepts 0/1 for BOOLEAN; Postgres requires a real boolean literal.
+        columns["requires_evidence"] = "BOOLEAN DEFAULT FALSE"
+    await _ensure_columns(conn, "strategy_tasks", columns)
+
+
 @app.on_event("startup")
 async def on_startup() -> None:
     async with engine.begin() as conn:
@@ -133,6 +161,7 @@ async def on_startup() -> None:
         await _ensure_deal_columns(conn)
         await _ensure_lead_negotiation_columns(conn)
         await _ensure_lead_contact_columns(conn)
+        await _ensure_task_execution_columns(conn)
     llm = get_llm()
     logger.info(
         "Atlas backend ready (env=%s, llm=%s, configured=%s)",
