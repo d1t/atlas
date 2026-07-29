@@ -7,6 +7,7 @@ from app.ai import get_llm
 from app.api.v1 import api_router
 from app.core.config import get_settings
 from app.core.db import engine
+from app.core.migrations import run_migrations
 from app.models import (  # noqa: F401  -- ensure mappers registered
     Activity,
     BuyerLead,
@@ -21,7 +22,6 @@ from app.models import (  # noqa: F401  -- ensure mappers registered
     Task,
     User,
 )
-from app.models.base import Base
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("atlas")
@@ -43,125 +43,9 @@ app.add_middleware(
 )
 
 
-_USER_NEW_COLUMNS: dict[str, str] = {
-    "company_name": "VARCHAR(255)",
-    "title": "VARCHAR(128)",
-    "phone": "VARCHAR(64)",
-}
-
-# V2 opportunity layer: new FKs on the ``deals`` table that link a Deal back to
-# its originating Opportunity + chosen SupplierLead + BuyerLead. Nullable so
-# pre-V2 deals stay valid.
-_DEAL_NEW_COLUMNS: dict[str, str] = {
-    "opportunity_id": "INTEGER",
-    "supplier_lead_id": "INTEGER",
-    "buyer_lead_id": "INTEGER",
-}
-
-# Negotiation-strategy columns added to supplier_leads / buyer_leads. Kept as
-# nullable-with-default so pre-existing rows stay valid.
-_LEAD_NEGOTIATION_COLUMNS: dict[str, str] = {
-    "negotiation_stage": "INTEGER DEFAULT 1",
-    "intel": "JSON DEFAULT '{}'",
-    "disclosed": "JSON DEFAULT '{}'",
-}
-
-# Hunter.io enrichment fields on supplier_leads.
-_LEAD_CONTACT_COLUMNS: dict[str, str] = {
-    "contact_name": "VARCHAR(255)",
-    "contact_title": "VARCHAR(255)",
-}
-
-# Execution-spine columns on strategy_tasks: the decomposition tree, acceptance
-# criteria and evidence gating. Every column is nullable or carries a default that
-# reproduces the previous behaviour, so tasks created before this layer existed stay
-# valid: they read back as ungated, human-owned, root-level ``task`` rows.
-_TASK_EXECUTION_COLUMNS: dict[str, str] = {
-    "parent_id": "INTEGER",
-    "kind": "VARCHAR(16) DEFAULT 'task'",
-    "position": "INTEGER DEFAULT 0",
-    "depends_on_ids": "JSON DEFAULT '[]'",
-    "acceptance_criteria": "TEXT",
-    "requires_evidence": "BOOLEAN DEFAULT 0",
-    "override_reason": "TEXT",
-    "verified_by_id": "INTEGER",
-    "verified_at": "TIMESTAMP",
-    "assignee": "VARCHAR(16) DEFAULT 'human'",
-    "agent_key": "VARCHAR(64)",
-    "confidence": "FLOAT",
-    "blocked_reason": "TEXT",
-}
-
-
-async def _ensure_columns(
-    conn, table: str, new_columns: dict[str, str]
-) -> None:
-    """Best-effort ``ALTER TABLE ADD COLUMN`` for missing optional fields.
-
-    ``Base.metadata.create_all`` only creates missing tables, not missing
-    columns on existing tables. For production we have Alembic; for local dev
-    we keep existing SQLite / Postgres DBs usable across pulls.
-    """
-    from sqlalchemy import text
-
-    dialect = conn.dialect.name
-    if dialect not in ("sqlite", "postgresql"):
-        return
-    if dialect == "sqlite":
-        result = await conn.execute(text(f"PRAGMA table_info({table})"))
-        existing = {row[1] for row in result.fetchall()}
-    else:
-        result = await conn.execute(
-            text(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = :t"
-            ),
-            {"t": table},
-        )
-        existing = {row[0] for row in result.fetchall()}
-
-    for col, ddl in new_columns.items():
-        if col not in existing:
-            await conn.execute(
-                text(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
-            )
-            logger.info("Added missing column %s.%s", table, col)
-
-
-async def _ensure_user_columns(conn) -> None:
-    await _ensure_columns(conn, "users", _USER_NEW_COLUMNS)
-
-
-async def _ensure_deal_columns(conn) -> None:
-    await _ensure_columns(conn, "deals", _DEAL_NEW_COLUMNS)
-
-
-async def _ensure_lead_negotiation_columns(conn) -> None:
-    await _ensure_columns(conn, "supplier_leads", _LEAD_NEGOTIATION_COLUMNS)
-    await _ensure_columns(conn, "buyer_leads", _LEAD_NEGOTIATION_COLUMNS)
-
-
-async def _ensure_lead_contact_columns(conn) -> None:
-    await _ensure_columns(conn, "supplier_leads", _LEAD_CONTACT_COLUMNS)
-
-
-async def _ensure_task_execution_columns(conn) -> None:
-    columns = dict(_TASK_EXECUTION_COLUMNS)
-    if conn.dialect.name == "postgresql":
-        # SQLite accepts 0/1 for BOOLEAN; Postgres requires a real boolean literal.
-        columns["requires_evidence"] = "BOOLEAN DEFAULT FALSE"
-    await _ensure_columns(conn, "strategy_tasks", columns)
-
-
 @app.on_event("startup")
 async def on_startup() -> None:
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        await _ensure_user_columns(conn)
-        await _ensure_deal_columns(conn)
-        await _ensure_lead_negotiation_columns(conn)
-        await _ensure_lead_contact_columns(conn)
-        await _ensure_task_execution_columns(conn)
+    await run_migrations(engine)
     llm = get_llm()
     logger.info(
         "Atlas backend ready (env=%s, llm=%s, configured=%s)",
