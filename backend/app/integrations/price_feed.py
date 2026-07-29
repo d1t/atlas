@@ -1,11 +1,23 @@
-"""Yahoo Finance price feed.
+"""Commodity futures price feed.
 
-Yahoo's public chart endpoint is undocumented but stable enough for an MVP
-reference price. We fetch per-commodity futures tickers and convert native
-exchange units into USD/MT so the pricing engine can use a single unit.
+We fetch per-commodity futures quotes and convert native exchange units into
+USD/MT so the pricing engine can use a single unit. No API key required.
 
-No API key required. Falls back to ``None`` on any HTTP or parse error — the
-UI renders "unavailable" rather than the deal engine breaking.
+Sources are tried in order:
+
+1. **CNBC** (``quote.cnbc.com``) — primary. A public JSON quote service that
+   serves datacenter IPs without throttling.
+2. **Yahoo Finance** — fallback. Its chart endpoint blocks cloud egress with a
+   blanket HTTP 429 (including the cookie/crumb handshake endpoint, so the
+   handshake cannot bootstrap from a blocked host), which makes it unusable as
+   a primary source from a server. It still works from residential IPs, so it
+   is kept behind a circuit breaker rather than dropped.
+
+Stooq was previously the fallback but its CSV endpoint (``/q/l/``) now returns
+404 for every symbol, so it has been removed.
+
+Falls back to ``None`` on any HTTP or parse error — the UI renders
+"unavailable" rather than the deal engine breaking.
 
 Unit conversions (sources: ICE, CBOT, CME contract specs):
 - Sugar #11 (SB=F): quoted in US cents / lb. 1 MT = 2204.62 lb.
@@ -20,6 +32,9 @@ Unit conversions (sources: ICE, CBOT, CME contract specs):
 - Cotton #2 (CT=F): US cents / lb.               → same as sugar
 - Crude Oil WTI (CL=F): USD / barrel.            → kept as $/bbl (not $/MT)
 - Gold (GC=F): USD / troy oz.                    → kept as $/oz
+
+CNBC quotes the same contracts in the same units, so one conversion table
+serves both sources.
 
 Anything not in the map returns raw quote + "unit unknown".
 """
@@ -36,10 +51,14 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+_CNBC_QUOTE_URL = (
+    "https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol"
+)
 _YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
 # Yahoo's cookie+crumb handshake. Visiting fc.yahoo.com sets the consent
 # cookie; getcrumb then returns a short token that must accompany data calls.
-# Mimicking a real browser this way sharply reduces 429s on datacenter IPs.
+# Note the crumb endpoint sits on the same host Yahoo blocks, so on a blocked
+# network the handshake cannot bootstrap and we proceed anonymously.
 _YAHOO_COOKIE_URL = "https://fc.yahoo.com/"
 _YAHOO_CRUMB_URL = "https://query1.finance.yahoo.com/v1/test/getcrumb"
 _USER_AGENT = (
@@ -48,7 +67,7 @@ _USER_AGENT = (
 )
 
 # --- Retry / backoff -------------------------------------------------------
-# Yahoo/Stooq occasionally answer transient 429/5xx or time out. Retry those a
+# Upstreams occasionally answer transient 429/5xx or time out. Retry those a
 # few times with exponential backoff + jitter before giving up / falling back.
 _MAX_ATTEMPTS = 3
 _RETRY_BASE_DELAY = 0.4  # seconds; grows 0.4, 0.8, ... plus jitter
@@ -62,7 +81,7 @@ def _backoff_delay(attempt: int) -> float:
 
 @dataclass(frozen=True)
 class CommoditySpec:
-    """Static mapping of a commodity slug to its Yahoo ticker + units."""
+    """Static mapping of a commodity slug to its futures symbols + units."""
 
     slug: str
     display: str
@@ -70,12 +89,11 @@ class CommoditySpec:
     exchange: str
     # Quoted unit and numeric conversion to $/MT. None = not applicable.
     quoted_unit: str  # e.g. "cents/lb", "cents/bushel", "USD/MT"
-    # Multiplier applied to the *raw* Yahoo quote to produce USD/MT.
+    # Multiplier applied to the *raw* quote to produce USD/MT.
     # If None, we do not convert and report the native unit.
     mt_multiplier: float | None
-    # Stooq symbol — fallback if Yahoo is rate-limiting (datacenter IPs often
-    # get 429). Stooq uses lower-case ``.f`` suffix for front-month futures.
-    stooq_symbol: str | None = None
+    # CNBC front-month futures symbol (``@`` prefix, ``.1`` = front month).
+    cnbc_symbol: str | None = None
 
 
 # Keep this tight — adding is easy; each entry should be verified against
@@ -88,7 +106,7 @@ COMMODITIES: dict[str, CommoditySpec] = {
         exchange="ICE",
         quoted_unit="cents/lb",
         mt_multiplier=22.0462,  # (cents/lb ÷ 100) × 2204.62 lb/MT
-        stooq_symbol="sb.f",
+        cnbc_symbol="@SB.1",
     ),
     "wheat": CommoditySpec(
         slug="wheat",
@@ -97,7 +115,7 @@ COMMODITIES: dict[str, CommoditySpec] = {
         exchange="CBOT",
         quoted_unit="cents/bushel",
         mt_multiplier=0.367437,  # (cents/bu ÷ 100) × 36.7437 bu/MT
-        stooq_symbol="zw.f",
+        cnbc_symbol="@W.1",
     ),
     "corn": CommoditySpec(
         slug="corn",
@@ -106,7 +124,7 @@ COMMODITIES: dict[str, CommoditySpec] = {
         exchange="CBOT",
         quoted_unit="cents/bushel",
         mt_multiplier=0.393680,  # (cents/bu ÷ 100) × 39.3680 bu/MT
-        stooq_symbol="zc.f",
+        cnbc_symbol="@C.1",
     ),
     "soybeans": CommoditySpec(
         slug="soybeans",
@@ -115,7 +133,7 @@ COMMODITIES: dict[str, CommoditySpec] = {
         exchange="CBOT",
         quoted_unit="cents/bushel",
         mt_multiplier=0.367437,
-        stooq_symbol="zs.f",
+        cnbc_symbol="@S.1",
     ),
     "coffee": CommoditySpec(
         slug="coffee",
@@ -124,7 +142,7 @@ COMMODITIES: dict[str, CommoditySpec] = {
         exchange="ICE",
         quoted_unit="cents/lb",
         mt_multiplier=22.0462,
-        stooq_symbol="kc.f",
+        cnbc_symbol="@KC.1",
     ),
     "cocoa": CommoditySpec(
         slug="cocoa",
@@ -133,7 +151,7 @@ COMMODITIES: dict[str, CommoditySpec] = {
         exchange="ICE",
         quoted_unit="USD/MT",
         mt_multiplier=1.0,
-        stooq_symbol="cc.f",
+        cnbc_symbol="@CC.1",
     ),
     "cotton": CommoditySpec(
         slug="cotton",
@@ -142,7 +160,7 @@ COMMODITIES: dict[str, CommoditySpec] = {
         exchange="ICE",
         quoted_unit="cents/lb",
         mt_multiplier=22.0462,
-        stooq_symbol="ct.f",
+        cnbc_symbol="@CT.1",
     ),
     "crude_oil": CommoditySpec(
         slug="crude_oil",
@@ -151,7 +169,7 @@ COMMODITIES: dict[str, CommoditySpec] = {
         exchange="NYMEX",
         quoted_unit="USD/bbl",
         mt_multiplier=None,  # report $/bbl, not $/MT
-        stooq_symbol="cl.f",
+        cnbc_symbol="@CL.1",
     ),
     "gold": CommoditySpec(
         slug="gold",
@@ -160,7 +178,7 @@ COMMODITIES: dict[str, CommoditySpec] = {
         exchange="COMEX",
         quoted_unit="USD/oz",
         mt_multiplier=None,
-        stooq_symbol="gc.f",
+        cnbc_symbol="@GC.1",
     ),
 }
 
@@ -234,6 +252,32 @@ _locks: dict[str, asyncio.Lock] = {}
 # Cached (fetched_at, crumb, cookies) for the Yahoo handshake.
 _CRUMB_TTL_SECONDS = 3600  # 1 hour
 _crumb_cache: tuple[float, str, dict[str, str]] | None = None
+# Cloud/datacenter egress is often blocked outright, in which case the
+# handshake 429s too. Remember that so every commodity in a page load doesn't
+# repeat it — otherwise one dashboard render triggers a burst of doomed calls
+# and deepens the rate limit.
+_CRUMB_FAILURE_TTL_SECONDS = 600  # 10 minutes
+_crumb_failed_at: float | None = None
+
+# Circuit breaker for the Yahoo data host. Yahoo does not throttle gradually
+# from datacenter IPs — it blocks. Once retries are exhausted, skip Yahoo for a
+# cooldown and go straight to the fallback, so a blocked host costs one attempt
+# per cooldown rather than three per commodity per request.
+_YAHOO_COOLDOWN_SECONDS = 300  # 5 minutes
+_yahoo_blocked_until: float = 0.0
+
+
+def _yahoo_in_cooldown() -> bool:
+    return time.time() < _yahoo_blocked_until
+
+
+def _trip_yahoo_breaker() -> None:
+    global _yahoo_blocked_until
+    _yahoo_blocked_until = time.time() + _YAHOO_COOLDOWN_SECONDS
+    logger.warning(
+        "Yahoo appears to be blocking this host; skipping it for %ds",
+        _YAHOO_COOLDOWN_SECONDS,
+    )
 
 
 def _get_lock(ticker: str) -> asyncio.Lock:
@@ -266,7 +310,7 @@ async def get_price(commodity: str) -> PriceQuote | None:
         if cached and (time.time() - cached[0]) < _CACHE_TTL_SECONDS:
             return cached[1]
 
-        quote = await _fetch_yahoo(spec)
+        quote = await _fetch_live(spec)
         if quote is not None:
             _cache[spec.ticker] = (time.time(), quote)
             _last_good[spec.ticker] = quote
@@ -289,10 +333,15 @@ async def _get_crumb() -> tuple[str | None, dict[str, str]]:
     Returns ``(crumb, cookies)``. On any failure returns ``(None, {})`` so the
     caller falls back to an anonymous request rather than breaking.
     """
-    global _crumb_cache
+    global _crumb_cache, _crumb_failed_at
     now = time.time()
     if _crumb_cache is not None and (now - _crumb_cache[0]) < _CRUMB_TTL_SECONDS:
         return _crumb_cache[1], _crumb_cache[2]
+    if (
+        _crumb_failed_at is not None
+        and (now - _crumb_failed_at) < _CRUMB_FAILURE_TTL_SECONDS
+    ):
+        return None, {}
 
     headers = {"User-Agent": _USER_AGENT}
     try:
@@ -308,14 +357,17 @@ async def _get_crumb() -> tuple[str | None, dict[str, str]]:
             cookies = {c.name: c.value for c in client.cookies.jar}
     except httpx.HTTPError as exc:
         logger.info("Yahoo crumb handshake failed (continuing anonymously): %s", exc)
+        _crumb_failed_at = now
         return None, {}
 
     # A valid crumb is a short opaque token; HTML means we got an error page.
     if not crumb or "<" in crumb or len(crumb) > 64:
         logger.info("Yahoo crumb response looked invalid; continuing anonymously")
+        _crumb_failed_at = now
         return None, {}
 
     _crumb_cache = (now, crumb, cookies)
+    _crumb_failed_at = None
     return crumb, cookies
 
 
@@ -358,92 +410,72 @@ async def _get_with_retry(
     return None
 
 
-async def _fetch_yahoo(spec: CommoditySpec) -> PriceQuote | None:
-    """Try Yahoo Finance first, fall back to stooq.com on any error.
-
-    Yahoo's chart endpoint rate-limits datacenter IPs aggressively (HTTP 429),
-    so production deployments behind cloud egress often fail. Stooq offers a
-    simpler public CSV feed and makes a reliable second source.
-    """
-    quote = await _fetch_yahoo_chart(spec)
-    if quote is not None:
-        return quote
-    if spec.stooq_symbol:
-        return await _fetch_stooq(spec)
-    return None
+async def _fetch_live(spec: CommoditySpec) -> PriceQuote | None:
+    """Try each source in order, returning the first usable quote."""
+    if spec.cnbc_symbol:
+        quote = await _fetch_cnbc(spec)
+        if quote is not None:
+            return quote
+    return await _fetch_yahoo_chart(spec)
 
 
-async def _fetch_yahoo_chart(spec: CommoditySpec) -> PriceQuote | None:
-    url = _YAHOO_CHART_URL.format(ticker=spec.ticker)
-    params: dict[str, Any] = {"interval": "1d", "range": "5d"}
-    crumb, cookies = await _get_crumb()
-    if crumb:
-        params["crumb"] = crumb
-
+async def _fetch_cnbc(spec: CommoditySpec) -> PriceQuote | None:
+    """Primary source — CNBC's public quote service."""
+    assert spec.cnbc_symbol is not None
+    params: dict[str, Any] = {
+        "symbols": spec.cnbc_symbol,
+        "requestMethod": "itv",
+        "noform": "1",
+        "partnerId": "2",
+        "fund": "1",
+        "exthrs": "1",
+        "output": "json",
+        "events": "1",
+    }
     resp = await _get_with_retry(
-        url,
+        _CNBC_QUOTE_URL,
         params=params,
         headers={"User-Agent": _USER_AGENT, "Accept": "application/json"},
-        cookies=cookies,
     )
     if resp is None:
         return None
     try:
         data = resp.json()
     except ValueError as exc:
-        logger.warning("Yahoo Finance returned non-JSON for %s: %s", spec.ticker, exc)
+        logger.warning("CNBC returned non-JSON for %s: %s", spec.cnbc_symbol, exc)
         return None
 
-    return _parse_chart(data, spec)
+    return _parse_cnbc(data, spec)
 
 
-async def _fetch_stooq(spec: CommoditySpec) -> PriceQuote | None:
-    """Fallback source — stooq.com end-of-day / intraday CSV."""
-    assert spec.stooq_symbol is not None
-    url = "https://stooq.com/q/l/"
-    params: dict[str, Any] = {
-        "s": spec.stooq_symbol,
-        "f": "sd2t2ohlcv",
-        "h": "",
-        "e": "csv",
-    }
-    resp = await _get_with_retry(
-        url,
-        params=params,
-        headers={"User-Agent": _USER_AGENT, "Accept": "text/csv,*/*"},
-    )
-    if resp is None:
-        return None
+def _parse_cnbc(data: dict[str, Any], spec: CommoditySpec) -> PriceQuote | None:
+    """Pull the last trade out of CNBC's ``FormattedQuoteResult`` envelope.
 
-    return _parse_stooq_csv(resp.text, spec)
-
-
-def _parse_stooq_csv(body: str, spec: CommoditySpec) -> PriceQuote | None:
-    # Expected shape: two lines. Header + one data row. Close is col 6.
-    # "Symbol,Date,Time,Open,High,Low,Close,Volume\nSB.F,2026-04-20,12:44:56,13.57,13.61,13.43,13.44,"
-    lines = [ln for ln in body.strip().splitlines() if ln.strip()]
-    if len(lines) < 2:
-        return None
-    cols = lines[1].split(",")
-    if len(cols) < 7:
-        return None
+    A single-symbol request may return the quote as an object rather than a
+    one-element list, so both shapes are handled.
+    """
     try:
-        open_ = _safe_float(cols[3])
-        close = _safe_float(cols[6])
-        if close is None:
-            return None
-        raw = close
-    except (IndexError, ValueError):
+        quotes = data["FormattedQuoteResult"]["FormattedQuote"]
+    except (KeyError, TypeError):
+        logger.warning("Unexpected CNBC payload shape for %s", spec.cnbc_symbol)
+        return None
+    if isinstance(quotes, dict):
+        quotes = [quotes]
+    if not quotes:
+        return None
+    q = quotes[0]
+    if not isinstance(q, dict):
         return None
 
-    # Stooq returns N/D for missing opens — in that case we can't compute change.
-    prev = open_  # best-effort "previous" ref: today's open (not yesterday's close)
+    raw = _safe_float(str(q.get("last", "")))
+    if raw is None:
+        return None
+    # "UNCH" (unchanged) and blanks are common in the previous-close field.
+    prev = _safe_float(str(q.get("previous_day_closing", "")))
+
     change_pct = None
     if prev and prev > 0:
         change_pct = round((raw - prev) / prev * 100, 2)
-
-    # Stooq's date/time columns are UTC-ish but parsing is overkill; use now().
-    ts = int(time.time())
 
     price_mt = (
         round(raw * spec.mt_multiplier, 2) if spec.mt_multiplier is not None else None
@@ -457,17 +489,49 @@ def _parse_stooq_csv(body: str, spec: CommoditySpec) -> PriceQuote | None:
         quoted_unit=spec.quoted_unit,
         raw_price=round(raw, 4),
         price_mt=price_mt,
-        currency="USD",
-        timestamp=ts,
+        currency=q.get("currencyCode") or "USD",
+        timestamp=int(time.time()),
         previous_close=round(prev, 4) if prev is not None else None,
         change_pct=change_pct,
-        source="stooq",
+        source="cnbc",
     )
 
 
+async def _fetch_yahoo_chart(spec: CommoditySpec) -> PriceQuote | None:
+    if _yahoo_in_cooldown():
+        return None
+
+    url = _YAHOO_CHART_URL.format(ticker=spec.ticker)
+    params: dict[str, Any] = {"interval": "1d", "range": "5d"}
+    crumb, cookies = await _get_crumb()
+    if crumb:
+        params["crumb"] = crumb
+
+    resp = await _get_with_retry(
+        url,
+        params=params,
+        headers={"User-Agent": _USER_AGENT, "Accept": "application/json"},
+        cookies=cookies,
+    )
+    if resp is None:
+        _trip_yahoo_breaker()
+        return None
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        logger.warning("Yahoo Finance returned non-JSON for %s: %s", spec.ticker, exc)
+        return None
+
+    return _parse_chart(data, spec)
+
+
 def _safe_float(x: str) -> float | None:
-    x = x.strip()
-    if not x or x.upper() in {"N/D", "N/A", "NA"}:
+    """Parse an upstream numeric string, tolerating thousands separators and
+    the various placeholders feeds use for "no value" (CNBC sends ``UNCH`` for
+    an unchanged/absent field).
+    """
+    x = x.strip().replace(",", "")
+    if not x or x.upper() in {"N/D", "N/A", "NA", "UNCH", "NONE"}:
         return None
     try:
         return float(x)
@@ -516,8 +580,10 @@ def _parse_chart(data: dict[str, Any], spec: CommoditySpec) -> PriceQuote | None
 
 def clear_cache() -> None:
     """Test hook."""
-    global _crumb_cache
+    global _crumb_cache, _crumb_failed_at, _yahoo_blocked_until
     _cache.clear()
     _last_good.clear()
     _locks.clear()
     _crumb_cache = None
+    _crumb_failed_at = None
+    _yahoo_blocked_until = 0.0

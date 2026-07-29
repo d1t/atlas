@@ -274,7 +274,7 @@ async def test_document_endpoint_auto_wires_supplier_quote_at_stage_3(
 
     # Stub the live-price feed so the test is deterministic and offline.
     from app.api.v1 import documents as documents_mod
-    from app.integrations.yahoo_finance import PriceQuote
+    from app.integrations.price_feed import PriceQuote
 
     async def _fake_get_price(_commodity: str) -> PriceQuote:
         return PriceQuote(

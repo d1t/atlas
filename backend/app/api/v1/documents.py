@@ -11,7 +11,7 @@ from app.ai.negotiation_strategy import (
 from app.ai.volume_disclosure import build_opportunity_disclosure
 from app.core.db import get_db
 from app.core.deps import get_current_user
-from app.integrations.yahoo_finance import get_price
+from app.integrations.price_feed import get_price
 from app.models.deal import Deal
 from app.models.document import Document
 from app.models.opportunity import BuyerLead, Opportunity, SupplierLead
