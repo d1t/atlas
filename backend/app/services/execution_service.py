@@ -246,13 +246,17 @@ async def transition(
     action.state = new_state
     now = datetime.now(UTC)
 
+    # Merged on every transition, not only completion: an action that is resumed or
+    # parked carries context worth keeping, and discarding it loses the record of why
+    # the state changed.
+    if result is not None:
+        action.result = {**action.result, **result}
+
     if new_state == "in_progress":
         action.started_at = action.started_at or now
         action.attempts += 1
     elif new_state == "completed":
         action.completed_at = now
-        if result is not None:
-            action.result = result
     elif new_state == "failed":
         action.last_error = error
     elif new_state == "retrying":

@@ -94,6 +94,13 @@ class ApprovalDecision(BaseModel):
     reason: str | None = None
 
 
+class PlanRunOut(BaseModel):
+    """Result of an orchestrator planning run."""
+
+    run: AgentRunOut
+    created_task_ids: list[int] = Field(default_factory=list)
+
+
 class GrantCreate(BaseModel):
     """Request a narrow standing authorisation for repeat follow-ups on one thread."""
 

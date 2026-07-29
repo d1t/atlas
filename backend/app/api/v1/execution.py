@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents import orchestrator
 from app.core.db import get_db
 from app.core.deps import get_current_user
 from app.models.execution import (
@@ -39,6 +40,7 @@ from app.schemas.execution import (
     GrantOut,
     GrantPauseRequest,
     KpiSnapshotOut,
+    PlanRunOut,
     PolicyPreviewOut,
     PolicyPreviewRequest,
     TaskCompleteRequest,
@@ -264,6 +266,40 @@ async def decide_approval(
     await db.commit()
     await db.refresh(approval)
     return ApprovalOut.model_validate(approval)
+
+
+@router.post("/strategies/{strategy_id}/plan", response_model=PlanRunOut)
+async def run_orchestrator(
+    strategy_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> PlanRunOut:
+    """Decompose the strategy's outstanding gaps into a task tree.
+
+    Planning never sends anything. It produces evidence-gated tasks; acting on them is
+    a separate, approval-governed step.
+    """
+    strategy = await _get_strategy(db, strategy_id)
+    run, created = await orchestrator.plan(db, strategy)
+    await db.commit()
+    await db.refresh(run)
+    return PlanRunOut(
+        run=AgentRunOut.model_validate(run),
+        created_task_ids=[t.id for t in created],
+    )
+
+
+@router.post("/strategies/{strategy_id}/resume", response_model=list[AgentActionOut])
+async def resume_after_replies(
+    strategy_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> list[AgentActionOut]:
+    """Wake any actions parked waiting for a reply that has since arrived."""
+    strategy = await _get_strategy(db, strategy_id)
+    resumed = await orchestrator.resume_from_replies(db, strategy)
+    await db.commit()
+    return [AgentActionOut.model_validate(a) for a in resumed]
 
 
 @router.get("/strategies/{strategy_id}/grants", response_model=list[GrantOut])
