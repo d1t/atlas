@@ -5,9 +5,10 @@ place where an agent system quietly starts lying to its user:
 
 1. **Legal state transitions.** An action cannot jump from ``proposed`` to ``completed``.
    Every move is checked against :data:`ALLOWED_TRANSITIONS` and written to the audit log.
-2. **Approval before anything external.** Action types in ``ALWAYS_APPROVED_ACTION_TYPES``
-   get an :class:`~app.models.execution.Approval` and sit in ``awaiting_approval`` until a
-   human decides. Callers cannot opt out.
+2. **Approval before anything external.** Actions are gated by
+   :mod:`app.services.approval_policy`, which inspects what the action will actually do
+   rather than only its type. Callers cannot opt out; the only way to skip a gate is a
+   narrow standing grant the user created themselves.
 3. **Evidence before completion.** A task marked ``requires_evidence`` cannot be completed
    without a supporting artefact — sending an email is not the same as winning a buyer.
    A human may still override, but only on the record, with a reason.
@@ -23,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.execution import (
     ALWAYS_APPROVED_ACTION_TYPES,
     AUTONOMOUS_ACTION_TYPES,
+    PRE_AUTHORISABLE_ACTION_TYPES,
     AgentAction,
     AgentRun,
     Approval,
@@ -32,6 +34,7 @@ from app.models.execution import (
 )
 from app.models.strategy import StrategyTask
 from app.models.user import User
+from app.services.approval_policy import PolicyDecision
 
 #: Legal moves through the action lifecycle. Anything absent is rejected, which keeps
 #: impossible histories (e.g. rejected -> completed) out of the audit trail entirely.
@@ -83,12 +86,18 @@ def build_idempotency_key(
 
 
 def requires_approval_for(action_type: str, *, trusted: bool = False) -> bool:
-    """Decide whether an action type needs a human gate.
+    """Type-level gate, used when there is no action content to inspect.
 
-    ``trusted`` lets a user pre-authorise a low-risk workflow, but it can never
-    unlock the always-gated types — sending mail, committing funds, signing, deleting.
+    This is the conservative answer. ``send_email`` returns ``True`` here even though a
+    standing grant may later permit a specific message, because deciding that needs the
+    draft and the database — see :func:`app.services.approval_policy.evaluate`.
+
+    ``trusted`` can relax an *unrecognised* type only, and deliberately cannot reach
+    anything that leaves the system.
     """
     if action_type in ALWAYS_APPROVED_ACTION_TYPES:
+        return True
+    if action_type in PRE_AUTHORISABLE_ACTION_TYPES:
         return True
     if action_type in AUTONOMOUS_ACTION_TYPES:
         return False
@@ -136,9 +145,13 @@ async def propose_action(
     payload: dict | None = None,
     rationale: str | None = None,
     risk: str = "medium",
-    trusted: bool = False,
+    decision: PolicyDecision | None = None,
 ) -> AgentAction:
-    """Create an action, gating it behind an approval when the type demands one.
+    """Create an action, gating it behind an approval unless policy says otherwise.
+
+    Pass ``decision`` from :func:`app.services.approval_policy.evaluate` when the action
+    has content worth inspecting (an email draft). Without it the conservative
+    type-level gate applies.
 
     Raises :class:`DuplicateAction` if an equivalent action already exists and has not
     been cancelled or rejected — this is what prevents repeat outreach.
@@ -158,7 +171,13 @@ async def propose_action(
         existing.idempotency_key = f"{key}:{int(datetime.now(UTC).timestamp())}"
         await db.flush()
 
-    gated = requires_approval_for(action_type, trusted=trusted)
+    if decision is None:
+        gated = requires_approval_for(action_type)
+        gate_reason = rationale
+    else:
+        gated = decision.requires_approval
+        gate_reason = decision.reason
+        risk = decision.risk
     action = AgentAction(
         run_id=run.id if run is not None else None,
         strategy_id=strategy_id,
@@ -180,7 +199,7 @@ async def propose_action(
                 strategy_id=strategy_id,
                 status="pending",
                 risk=risk,
-                request_summary=rationale,
+                request_summary=gate_reason,
             )
         )
 
@@ -192,7 +211,15 @@ async def propose_action(
         action="action.proposed",
         entity_type="agent_action",
         entity_id=action.id,
-        after={"action_type": action_type, "state": action.state},
+        after={
+            "action_type": action_type,
+            "state": action.state,
+            "gated": gated,
+            # Recorded even when the action proceeds unattended, so a grant-covered
+            # send is as auditable as an approved one.
+            "policy": gate_reason,
+            "grant_id": decision.grant_id if decision is not None else None,
+        },
     )
     await db.flush()
     return action
@@ -219,13 +246,17 @@ async def transition(
     action.state = new_state
     now = datetime.now(UTC)
 
+    # Merged on every transition, not only completion: an action that is resumed or
+    # parked carries context worth keeping, and discarding it loses the record of why
+    # the state changed.
+    if result is not None:
+        action.result = {**action.result, **result}
+
     if new_state == "in_progress":
         action.started_at = action.started_at or now
         action.attempts += 1
     elif new_state == "completed":
         action.completed_at = now
-        if result is not None:
-            action.result = result
     elif new_state == "failed":
         action.last_error = error
     elif new_state == "retrying":

@@ -279,12 +279,14 @@ async def draft_task_email(
     strategy_id: int,
     task_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ) -> TaskEmailDraft:
     """Draft a review-ready email for a task, prefilled from its linked lead."""
     strategy = await _get_strategy(db, strategy_id)
     task = await _get_task(db, strategy_id, task_id)
-    draft = await strategy_service.draft_task_email(db, strategy, task)
+    draft = await strategy_service.draft_task_email(
+        db, strategy, task, user_id=user.id
+    )
     return TaskEmailDraft(**draft)
 
 
@@ -330,14 +332,14 @@ async def source_suppliers(
     task_id: int,
     limit: int = 4,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ) -> SourcingResult:
     """Run AI Discover for a sourcing task, rank candidates, and return the top
     few each with a ready-to-send RFQ draft."""
     strategy = await _get_strategy(db, strategy_id)
     task = await _get_task(db, strategy_id, task_id)
     data = await strategy_service.source_suppliers_for_task(
-        db, strategy, task, limit=max(1, min(limit, 10))
+        db, strategy, task, limit=max(1, min(limit, 10)), user_id=user.id
     )
     return SourcingResult(**data)
 

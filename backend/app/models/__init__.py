@@ -10,7 +10,9 @@ from app.models.execution import (
     AuditLog,
     Evidence,
     KpiSnapshot,
+    PreAuthorizationGrant,
 )
+from app.models.integration import GmailConnection, OAuthState
 from app.models.opportunity import BuyerLead, Opportunity, SupplierLead
 from app.models.strategy import Strategy, StrategyTask
 from app.models.supplier import Supplier
@@ -27,8 +29,11 @@ __all__ = [
     "Deal",
     "Document",
     "EmailMessage",
+    "GmailConnection",
     "Evidence",
     "KpiSnapshot",
+    "OAuthState",
+    "PreAuthorizationGrant",
     "Opportunity",
     "Strategy",
     "StrategyTask",

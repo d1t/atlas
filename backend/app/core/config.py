@@ -32,10 +32,25 @@ class Settings(BaseSettings):
     # Leave empty to use deterministic mock contacts in dev/test.
     hunter_api_key: str = ""
 
-    # Gmail (SMTP send + IMAP read) via an App Password. All optional; when the
-    # address / app password are empty the integration runs in OFFLINE mode:
-    # outbound emails are recorded but not actually transmitted, and reply-sync
-    # is a no-op. This keeps the whole flow testable without credentials.
+    # Google OAuth 2.0 — the customer-facing Gmail integration. Each user connects
+    # their own mailbox; nothing is shared. Off until credentials exist, so the flag
+    # is what decides whether the connect flow is offered at all.
+    gmail_oauth_enabled: bool = False
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_redirect_uri: str = (
+        "http://localhost:8000/api/v1/integrations/google/callback"
+    )
+    # Fernet key protecting refresh tokens at rest. Generate with:
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    token_encryption_key: str = ""
+
+    # Gmail (SMTP send + IMAP read) via an App Password. A DEVELOPMENT AND ADMIN
+    # FALLBACK ONLY — it authenticates one shared mailbox, so it cannot serve
+    # multiple customers. Prefer the OAuth path above. When the address / app
+    # password are empty the integration runs in OFFLINE mode: outbound emails are
+    # recorded but not transmitted, and reply-sync is a no-op, which keeps the whole
+    # flow testable without credentials.
     gmail_address: str = ""
     gmail_app_password: str = ""
     gmail_from_name: str = ""
@@ -57,7 +72,22 @@ class Settings(BaseSettings):
 
     @property
     def gmail_configured(self) -> bool:
+        """Whether the SMTP/IMAP fallback can authenticate."""
         return bool(self.gmail_address and self.gmail_app_password)
+
+    @property
+    def google_oauth_configured(self) -> bool:
+        """Whether the OAuth flow can actually run.
+
+        The flag alone is not enough: a flag switched on without credentials would
+        offer users a Connect button that dead-ends at Google.
+        """
+        return bool(
+            self.gmail_oauth_enabled
+            and self.google_client_id
+            and self.google_client_secret
+            and self.google_redirect_uri
+        )
 
 
 @lru_cache
