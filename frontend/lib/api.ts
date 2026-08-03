@@ -388,6 +388,18 @@ export const api = {
       `/api/v1/prices/${encodeURIComponent(commodity)}${refresh ? "?refresh=true" : ""}`,
     ),
 
+  // mailbox integration (Google OAuth)
+  integrationStatus: () =>
+    request<ConnectionStatus>("/api/v1/integrations/google/status"),
+  integrationPermissions: () =>
+    request<ScopeExplanation[]>("/api/v1/integrations/google/permissions"),
+  connectGmail: () =>
+    request<ConsentResponse>("/api/v1/integrations/google/connect", {
+      method: "POST",
+    }),
+  disconnectGmail: () =>
+    request<void>("/api/v1/integrations/google", { method: "DELETE" }),
+
   // gmail email
   gmailStatus: () => request<GmailStatus>("/api/v1/email/status"),
   listEmails: (
@@ -726,7 +738,31 @@ export const STAGE_LABELS: Record<string, string> = {
 export type GmailStatus = {
   configured: boolean;
   address: string | null;
-  mode: "live" | "offline";
+  mode: "live" | "offline" | "needs_reconnect";
+  provider: "google" | "smtp";
+  detail: string;
+};
+
+// --- Mailbox integration types ---
+
+export type ConnectionStatus = {
+  provider: "google" | "smtp";
+  connected: boolean;
+  mode: "live" | "offline" | "needs_reconnect" | "unavailable";
+  address: string;
+  detail: string;
+  fault: string | null;
+  missing_scopes: string[];
+  can_send: boolean;
+  connected_at: string | null;
+  last_used_at: string | null;
+};
+
+export type ScopeExplanation = { scope: string; reason: string };
+
+export type ConsentResponse = {
+  authorization_url: string;
+  scopes: ScopeExplanation[];
 };
 
 export type EmailMessage = {

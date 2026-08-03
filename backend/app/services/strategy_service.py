@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai import get_llm
+from app.core.config import get_settings
 from app.models.email import EmailMessage
 from app.models.opportunity import BuyerLead, Opportunity, SupplierLead
 from app.models.strategy import (
@@ -871,15 +872,19 @@ def _generic_outreach_template(
 
 
 async def draft_task_email(
-    db: AsyncSession, strategy: Strategy, task: StrategyTask
+    db: AsyncSession,
+    strategy: Strategy,
+    task: StrategyTask,
+    *,
+    user_id: int | None = None,
 ) -> dict:
     """Draft a review-ready email for a single strategy task.
 
     Resolves the recipient from the task's linked supplier/buyer lead and builds
     a stage-aware subject + body. Returns a dict shaped for ``TaskEmailDraft``.
     """
-    client = email_service.get_gmail_client()
-    from_name = client.settings.gmail_from_name or "The Atlas Trade Desk"
+    client = await email_service.resolve_provider(db, user_id)
+    from_name = get_settings().gmail_from_name or "The Atlas Trade Desk"
 
     opp = (
         await db.get(Opportunity, task.opportunity_id)
@@ -960,7 +965,7 @@ async def send_task_email(
     succeeds and ``complete_task`` is set — marks the task ``done``.
     Returns ``(email_message, task, mode)``.
     """
-    client = email_service.get_gmail_client()
+    client = await email_service.resolve_provider(db, user_id)
     mode = "live" if client.configured else "offline"
 
     msg = await email_service.send_email(
@@ -1013,14 +1018,19 @@ def _rank_candidates(
 
 
 async def source_suppliers_for_task(
-    db: AsyncSession, strategy: Strategy, task: StrategyTask, *, limit: int = 4
+    db: AsyncSession,
+    strategy: Strategy,
+    task: StrategyTask,
+    *,
+    limit: int = 4,
+    user_id: int | None = None,
 ) -> dict:
     """Execute a "source more suppliers" task: run AI Discover for the
     commodity/lane, qualify + rank the candidates and return the top ``limit``
     each with a ready-to-send RFQ draft. Shaped for ``SourcingResult``.
     """
-    client = email_service.get_gmail_client()
-    from_name = client.settings.gmail_from_name or "The Atlas Trade Desk"
+    client = await email_service.resolve_provider(db, user_id)
+    from_name = get_settings().gmail_from_name or "The Atlas Trade Desk"
 
     opp = (
         await db.get(Opportunity, task.opportunity_id)
@@ -1097,7 +1107,7 @@ async def send_sourcing_email(
     it. Ticks the task off only when ``complete_task`` is set (a sourcing task
     typically fans out to several candidates).
     """
-    client = email_service.get_gmail_client()
+    client = await email_service.resolve_provider(db, user_id)
     mode = "live" if client.configured else "offline"
 
     lead: SupplierLead | None = None
@@ -1177,7 +1187,7 @@ async def send_weekly_digest(
 
     subject, body = build_digest(strategy, week, pillars, today_tasks, list(week_tasks))
 
-    client = email_service.get_gmail_client()
+    client = await email_service.resolve_provider(db, user_id)
     mode = "live" if client.configured else "offline"
     msg = await email_service.send_email(
         db,

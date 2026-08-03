@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
 from app.core.deps import get_current_user
-from app.integrations.gmail import get_gmail_client
 from app.models.document import Document
 from app.models.email import EmailMessage
 from app.models.opportunity import BuyerLead, SupplierLead
@@ -21,7 +20,7 @@ from app.schemas.email import (
     ReplySyncResult,
     SendDocumentRequest,
 )
-from app.services import email_service
+from app.services import email_service, integration_service
 
 router = APIRouter()
 
@@ -41,12 +40,27 @@ def _split_subject_body(content: str, fallback_subject: str) -> tuple[str, str]:
 
 
 @router.get("/status", response_model=GmailStatus)
-async def gmail_status(_: User = Depends(get_current_user)) -> GmailStatus:
-    client = get_gmail_client()
+async def gmail_status(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> GmailStatus:
+    """Report the mailbox this user would actually send from.
+
+    Provider-aware: a user with their own Gmail connection sees that, not the shared
+    SMTP fallback's state.
+    """
+    status = await integration_service.status(db, user.id)
+    # This endpoint answers "will my email actually send?", so anything that cannot
+    # send is offline. The exception is a connection needing repair, which is the one
+    # state the user can act on. Deployment-level detail belongs on the integrations
+    # endpoint, not here.
+    mode = status.mode if status.mode in ("live", "needs_reconnect") else "offline"
     return GmailStatus(
-        configured=client.configured,
-        address=client.address or None,
-        mode="live" if client.configured else "offline",
+        configured=status.can_send,
+        address=status.address or None,
+        mode=mode,
+        provider=status.provider,
+        detail=status.detail,
     )
 
 
@@ -161,9 +175,9 @@ async def send_document(
 @router.post("/sync", response_model=ReplySyncResult)
 async def sync_replies(
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ) -> ReplySyncResult:
-    new_messages, fetched, mode = await email_service.sync_replies(db)
+    new_messages, fetched, mode = await email_service.sync_replies(db, user_id=user.id)
     matched = sum(1 for m in new_messages if m.matched_side is not None)
     return ReplySyncResult(
         fetched=fetched,
