@@ -212,7 +212,11 @@ async def evaluate(
         explanations = {
             "commercial_language": (
                 "contains pricing or contractual language"
-                + (f" ({len(ctx_terms)} signals)" if ctx_terms else "")
+                + (
+                    f" ({len(ctx_terms)} signal{'s' if len(ctx_terms) > 1 else ''})"
+                    if ctx_terms
+                    else ""
+                )
             ),
             "attachments": "has attachments",
             "materially_changed": "differs materially from the approved draft",
