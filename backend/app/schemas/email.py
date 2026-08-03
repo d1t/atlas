@@ -7,7 +7,11 @@ from pydantic import BaseModel, ConfigDict, EmailStr
 class GmailStatus(BaseModel):
     configured: bool
     address: str | None = None
-    mode: str  # "live" | "offline"
+    #: "live" | "offline" | "needs_reconnect" | "unavailable"
+    mode: str
+    #: "google" (per-user OAuth) or "smtp" (shared dev/admin fallback)
+    provider: str = "smtp"
+    detail: str = ""
 
 
 class EmailSendRequest(BaseModel):

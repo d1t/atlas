@@ -16,12 +16,23 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.integrations.gmail import GmailClient, get_gmail_client
+from app.integrations.email_provider import EmailProvider
 from app.models.activity import Activity
 from app.models.email import EmailMessage
 from app.models.opportunity import BuyerLead, SupplierLead
 
 logger = logging.getLogger("atlas.email")
+
+
+async def resolve_provider(db: AsyncSession, user_id: int | None) -> EmailProvider:
+    """Pick the mailbox for this user.
+
+    Imported lazily because the integration service imports the email models this
+    module defines behaviour around; deferring keeps the two from circling.
+    """
+    from app.services import integration_service
+
+    return await integration_service.provider_for(db, user_id)
 
 
 async def send_email(
@@ -38,10 +49,15 @@ async def send_email(
     document_id: int | None = None,
     in_reply_to: str | None = None,
     references: list[str] | None = None,
-    client: GmailClient | None = None,
+    client: EmailProvider | None = None,
 ) -> EmailMessage:
-    """Send an email (or record it offline) and log it against the lead."""
-    client = client or get_gmail_client()
+    """Send an email (or record it offline) and log it against the lead.
+
+    The mailbox is resolved per user rather than fixed: a user with their own Gmail
+    connection sends from it, everyone else falls back to the shared SMTP/IMAP client,
+    which is itself offline-safe. This function does not know which it got.
+    """
+    client = client or await resolve_provider(db, user_id)
     result = await client.send(
         to_email,
         subject,
@@ -114,14 +130,15 @@ async def sync_replies(
     db: AsyncSession,
     *,
     since: datetime | None = None,
-    client: GmailClient | None = None,
+    user_id: int | None = None,
+    client: EmailProvider | None = None,
 ) -> tuple[list[EmailMessage], int, str]:
     """Pull inbound mail, match to leads by sender address, and log new replies.
 
     Returns ``(new_messages, fetched_count, mode)`` where ``mode`` is
     ``"live"`` or ``"offline"``.
     """
-    client = client or get_gmail_client()
+    client = client or await resolve_provider(db, user_id)
     mode = "live" if client.configured else "offline"
     fetched = await client.fetch_replies(since=since)
 

@@ -6,6 +6,7 @@ from app.api.v1 import (
     documents,
     email,
     execution,
+    integrations,
     opportunities,
     pipeline,
     prices,
@@ -28,3 +29,4 @@ api_router.include_router(strategy.router, prefix="/strategy", tags=["strategy"]
 api_router.include_router(
     execution.router, prefix="/execution", tags=["execution"]
 )
+api_router.include_router(integrations.router)
