@@ -166,6 +166,141 @@ async function request<T>(
   return (await res.text()) as unknown as T;
 }
 
+
+// --- Execution layer ---------------------------------------------------------
+
+export type TaskNode = {
+  id: number;
+  strategy_id: number;
+  parent_id: number | null;
+  kind: string;
+  pillar: string;
+  title: string;
+  detail: string | null;
+  status: string;
+  priority: string;
+  position: number;
+  assignee: string;
+  agent_key: string | null;
+  capability: string | null;
+  confidence: number | null;
+  blocked_reason: string | null;
+  acceptance_criteria: string | null;
+  requires_evidence: boolean;
+  override_reason: string | null;
+  depends_on_ids: number[];
+  due_at: string | null;
+  completed_at: string | null;
+  verified_at: string | null;
+  evidence_count: number;
+  blocked_by: number[];
+  children: TaskNode[];
+};
+
+export type AgentRunOut = {
+  id: number;
+  strategy_id: number;
+  agent_key: string;
+  trigger: string;
+  status: string;
+  reasoning: string | null;
+  summary: string | null;
+  error: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+};
+
+export type AgentActionOut = {
+  id: number;
+  strategy_id: number;
+  run_id: number | null;
+  task_id: number | null;
+  action_type: string;
+  target: string;
+  state: string;
+  requires_approval: boolean;
+  risk: string;
+  rationale: string | null;
+  error: string | null;
+  attempts: number;
+  payload: Record<string, unknown>;
+  result: Record<string, unknown> | null;
+  email_message_id: number | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+};
+
+export type ApprovalOut = {
+  id: number;
+  strategy_id: number;
+  action_id: number;
+  status: string;
+  risk: string;
+  request_summary: string;
+  reason: string | null;
+  decided_by_id: number | null;
+  decided_at: string | null;
+  created_at: string;
+};
+
+export type ApprovalQueueItem = {
+  approval: ApprovalOut;
+  action: AgentActionOut;
+  task_title: string | null;
+};
+
+export type EvidenceOut = {
+  id: number;
+  task_id: number;
+  kind: string;
+  description: string;
+  url: string | null;
+  email_message_id: number | null;
+  document_id: number | null;
+  created_by_type: string;
+  created_at: string;
+};
+
+export type AuditLogOut = {
+  id: number;
+  strategy_id: number | null;
+  actor_type: string;
+  actor_id: number | null;
+  actor_label: string | null;
+  action: string;
+  entity_type: string | null;
+  entity_id: number | null;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  created_at: string;
+};
+
+export type ExecutionOutcome = {
+  action_id: number;
+  task_id: number | null;
+  capability: string;
+  state: string;
+  detail: string;
+};
+
+export type ExecutionRunOut = {
+  run: AgentRunOut;
+  outcomes: ExecutionOutcome[];
+};
+
+export type PlanRunOut = {
+  run: AgentRunOut;
+  created_task_ids: number[];
+};
+
+export type StrategyAgentState = {
+  strategy_id: number;
+  agents_paused: boolean;
+  reason: string | null;
+};
+
 export class ApiError extends Error {
   constructor(public status: number, public body: string) {
     super(`API ${status}: ${body}`);
@@ -187,6 +322,47 @@ export const api = {
   me: () => request<User>("/api/v1/auth/me"),
   updateMe: (payload: UserUpdate) =>
     request<User>("/api/v1/auth/me", { method: "PATCH", json: payload }),
+
+  // execution layer
+  taskTree: (id: number) =>
+    request<TaskNode[]>(`/api/v1/execution/strategies/${id}/tasks/tree`),
+  agentRuns: (id: number) =>
+    request<AgentRunOut[]>(`/api/v1/execution/strategies/${id}/runs`),
+  agentActions: (id: number) =>
+    request<AgentActionOut[]>(`/api/v1/execution/strategies/${id}/actions`),
+  approvalQueue: (id: number) =>
+    request<ApprovalQueueItem[]>(`/api/v1/execution/strategies/${id}/approvals`),
+  auditLog: (id: number) =>
+    request<AuditLogOut[]>(`/api/v1/execution/strategies/${id}/audit`),
+  taskEvidence: (taskId: number) =>
+    request<EvidenceOut[]>(`/api/v1/execution/tasks/${taskId}/evidence`),
+  planStrategy: (id: number) =>
+    request<PlanRunOut>(`/api/v1/execution/strategies/${id}/plan`, {
+      method: "POST",
+    }),
+  executeStrategy: (id: number) =>
+    request<ExecutionRunOut>(`/api/v1/execution/strategies/${id}/execute`, {
+      method: "POST",
+    }),
+  resumeStrategy: (id: number) =>
+    request<AgentActionOut[]>(`/api/v1/execution/strategies/${id}/resume`, {
+      method: "POST",
+    }),
+  setAgentPause: (id: number, paused: boolean, reason?: string) =>
+    request<StrategyAgentState>(`/api/v1/execution/strategies/${id}/pause`, {
+      method: "POST",
+      json: { paused, reason: reason || null },
+    }),
+  decideApproval: (approvalId: number, approved: boolean, reason?: string) =>
+    request<ApprovalOut>(`/api/v1/execution/approvals/${approvalId}/decide`, {
+      method: "POST",
+      json: { approved, reason: reason || null },
+    }),
+  completeExecutionTask: (taskId: number, override_reason?: string) =>
+    request<TaskNode>(`/api/v1/execution/tasks/${taskId}/complete`, {
+      method: "POST",
+      json: { override_reason: override_reason || null },
+    }),
 
   // suppliers
   listSuppliers: (params: { q?: string; country?: string; commodity?: string } = {}) => {
@@ -863,6 +1039,8 @@ export type Strategy = {
   target_margin_per_mt: number | null;
   pillars: Partial<Record<PillarKey, PillarObjective>>;
   status: string;
+  agents_paused: boolean;
+  agents_paused_reason: string | null;
   owner_id: number | null;
   created_at: string | null;
   updated_at: string | null;

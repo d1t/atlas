@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "../../../components/AppShell";
@@ -159,8 +160,11 @@ export default function StrategyBoardPage() {
           )}
         </div>
         <div className="flex flex-col gap-2">
+          <Link className="btn-primary text-center" href={`/strategy/${id}/execution`}>
+            Agent execution →
+          </Link>
           <button
-            className="btn-primary"
+            className="btn-ghost"
             onClick={generatePlan}
             disabled={busy}
           >

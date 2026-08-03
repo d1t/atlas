@@ -43,6 +43,10 @@ ACTION_TYPE_FOR = {
 }
 
 
+class AgentsPaused(RuntimeError):
+    """The user has stopped every agent on this strategy."""
+
+
 class CapabilityFailed(RuntimeError):
     """A handler could not do its job. Carries a message fit to show a user."""
 
@@ -387,9 +391,18 @@ async def run_action(
     *,
     user_id: int | None = None,
 ) -> Outcome:
-    """Execute one queued action, recording success, blockage or failure."""
+    """Execute one queued action, recording success, blockage or failure.
+
+    The pause is re-checked here and not only in :func:`execute`, because an approval
+    granted before the brake went on must not carry an action past it.
+    """
     task = await db.get(StrategyTask, action.task_id) if action.task_id else None
     strategy = await db.get(Strategy, action.strategy_id)
+    if strategy is not None and strategy.agents_paused:
+        raise AgentsPaused(
+            strategy.agents_paused_reason
+            or "Agents are paused for this strategy. Resume them to continue."
+        )
     capability = next(
         (c for c, t in ACTION_TYPE_FOR.items() if t == action.action_type),
         None,
@@ -457,7 +470,15 @@ async def execute(
 
     Safe to call repeatedly: tasks with a live action are skipped, and the idempotency
     key catches anything the task-level check misses.
+
+    Raises :class:`AgentsPaused` when the strategy's brake is on, so a pause takes
+    effect on the next attempt rather than at the end of the current one.
     """
+    if strategy.agents_paused:
+        raise AgentsPaused(
+            strategy.agents_paused_reason
+            or "Agents are paused for this strategy. Resume them to continue."
+        )
     run = AgentRun(
         strategy_id=strategy.id,
         agent_key=EXECUTOR_KEY,

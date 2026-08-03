@@ -54,6 +54,8 @@ class StrategyOut(StrategyBase):
     id: int
     pillars: dict
     status: str
+    agents_paused: bool = False
+    agents_paused_reason: str | None = None
     owner_id: int | None
     created_at: datetime | None
     updated_at: datetime | None

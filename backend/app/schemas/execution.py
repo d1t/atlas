@@ -156,6 +156,19 @@ class GrantPauseRequest(BaseModel):
     paused: bool
 
 
+class AgentPauseRequest(BaseModel):
+    """Stop or restart every agent on a strategy."""
+
+    paused: bool
+    reason: str | None = None
+
+
+class StrategyAgentState(BaseModel):
+    strategy_id: int
+    agents_paused: bool
+    reason: str | None = None
+
+
 class PolicyPreviewRequest(BaseModel):
     """Ask what would happen to a draft without creating anything."""
 
