@@ -101,6 +101,27 @@ class PlanRunOut(BaseModel):
     created_task_ids: list[int] = Field(default_factory=list)
 
 
+class ExecutionOutcomeOut(BaseModel):
+    """What running one action produced."""
+
+    action_id: int
+    task_id: int | None = None
+    capability: str
+    state: str
+    detail: str = ""
+
+
+class ExecutionRunOut(BaseModel):
+    """Result of an execution pass.
+
+    ``awaiting_approval`` outcomes are the point: work the agent prepared but is not
+    permitted to complete unattended.
+    """
+
+    run: AgentRunOut
+    outcomes: list[ExecutionOutcomeOut] = Field(default_factory=list)
+
+
 class GrantCreate(BaseModel):
     """Request a narrow standing authorisation for repeat follow-ups on one thread."""
 
@@ -173,6 +194,7 @@ class TaskNode(BaseModel):
     position: int
     assignee: str
     agent_key: str | None = None
+    capability: str | None = None
     confidence: float | None = None
     blocked_reason: str | None = None
     acceptance_criteria: str | None = None

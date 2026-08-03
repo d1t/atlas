@@ -168,5 +168,8 @@ class StrategyTask(Base, TimestampMixin):
     agent_key: Mapped[str | None] = mapped_column(String(64))
     #: Agent's self-reported confidence in its plan for this task (0-1).
     confidence: Mapped[float | None] = mapped_column(Float)
+    #: The capability the executor should invoke. Persisted rather than re-derived
+    #: from the title, so execution acts on what was planned, not on a guess.
+    capability: Mapped[str | None] = mapped_column(String(32))
     #: Why the task cannot currently proceed, shown directly in the UI.
     blocked_reason: Mapped[str | None] = mapped_column(Text)

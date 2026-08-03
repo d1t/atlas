@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents import orchestrator
+from app.agents import executor, orchestrator
 from app.core.db import get_db
 from app.core.deps import get_current_user
 from app.models.execution import (
@@ -36,6 +36,8 @@ from app.schemas.execution import (
     AuditLogOut,
     EvidenceCreate,
     EvidenceOut,
+    ExecutionOutcomeOut,
+    ExecutionRunOut,
     GrantCreate,
     GrantOut,
     GrantPauseRequest,
@@ -263,6 +265,13 @@ async def decide_approval(
         )
     except execution_service.TransitionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    # Approving is the decision to act, so the action runs now rather than waiting for
+    # someone to remember to trigger execution.
+    if payload.approved:
+        action = await db.get(AgentAction, approval.action_id)
+        if action is not None and action.state == "queued":
+            await executor.run_action(db, action, user_id=user.id)
     await db.commit()
     await db.refresh(approval)
     return ApprovalOut.model_validate(approval)
@@ -286,6 +295,39 @@ async def run_orchestrator(
     return PlanRunOut(
         run=AgentRunOut.model_validate(run),
         created_task_ids=[t.id for t in created],
+    )
+
+
+@router.post("/strategies/{strategy_id}/execute", response_model=ExecutionRunOut)
+async def run_executor(
+    strategy_id: int,
+    limit: int = 20,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> ExecutionRunOut:
+    """Act on the planned work: research, draft, and send what policy clears.
+
+    Every outbound message is judged on its content before it goes anywhere, so a run
+    that returns only ``awaiting_approval`` outcomes is working as intended, not failing.
+    """
+    strategy = await _get_strategy(db, strategy_id)
+    report = await executor.execute(
+        db, strategy, user_id=user.id, limit=max(1, min(limit, 50))
+    )
+    await db.commit()
+    run = await db.get(AgentRun, report.run_id)
+    return ExecutionRunOut(
+        run=AgentRunOut.model_validate(run),
+        outcomes=[
+            ExecutionOutcomeOut(
+                action_id=o.action_id,
+                task_id=o.task_id,
+                capability=o.capability,
+                state=o.state,
+                detail=o.detail,
+            )
+            for o in report.outcomes
+        ],
     )
 
 
