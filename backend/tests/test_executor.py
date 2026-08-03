@@ -426,3 +426,46 @@ async def test_human_only_tasks_are_left_alone(session, strategy):
 
     assert report.outcomes == []
     assert (await session.execute(select(AgentAction))).scalars().all() == []
+
+
+# --- The brake -----------------------------------------------------------------
+
+
+async def test_pausing_stops_every_agent_on_the_strategy(session, strategy):
+    opp = await _opportunity(session, strategy)
+    lead = await _supplier_lead(session, opp)
+    await _task(session, strategy, opportunity_id=opp.id, supplier_lead_id=lead.id)
+    strategy.agents_paused = True
+    strategy.agents_paused_reason = "Investigating a bad draft."
+    await session.flush()
+
+    with pytest.raises(executor.AgentsPaused, match="bad draft"):
+        await executor.execute(session, strategy)
+
+    assert (await session.execute(select(AgentAction))).scalars().all() == []
+
+
+async def test_an_approval_granted_before_the_pause_does_not_slip_through(
+    session, strategy
+):
+    """The brake has to beat work already cleared, or it is not a brake."""
+    opp = await _opportunity(session, strategy)
+    lead = await _supplier_lead(session, opp)
+    await _task(session, strategy, opportunity_id=opp.id, supplier_lead_id=lead.id)
+    await executor.execute(session, strategy)
+    approval = (await session.execute(select(Approval))).scalars().one()
+    await execution_service.decide_approval(
+        session, approval, approved=True, user=await _user(session)
+    )
+
+    strategy.agents_paused = True
+    await session.flush()
+    action = await session.get(AgentAction, approval.action_id)
+
+    with pytest.raises(executor.AgentsPaused):
+        await executor.run_action(session, action)
+
+    # The approval survives, so the user does not have to grant it twice.
+    assert action.state == "queued"
+    assert action.email_message_id is None
+    assert approval.status == "approved"

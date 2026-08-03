@@ -23,6 +23,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -78,6 +79,13 @@ class Strategy(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(
         String(32), default="active", index=True, nullable=False
     )
+    #: Stop every agent on this strategy at once. Separate from ``status`` because
+    #: pausing the agents is an operational brake, not an admission the strategy is
+    #: over — a person carries on working while the agents stand down.
+    agents_paused: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=text("0")
+    )
+    agents_paused_reason: Mapped[str | None] = mapped_column(Text)
     owner_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )

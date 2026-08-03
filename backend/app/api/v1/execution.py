@@ -6,6 +6,7 @@ execution layer on top.
 """
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -29,6 +30,7 @@ from app.models.strategy import Strategy, StrategyTask
 from app.models.user import User
 from app.schemas.execution import (
     AgentActionOut,
+    AgentPauseRequest,
     AgentRunOut,
     ApprovalDecision,
     ApprovalOut,
@@ -45,11 +47,14 @@ from app.schemas.execution import (
     PlanRunOut,
     PolicyPreviewOut,
     PolicyPreviewRequest,
+    StrategyAgentState,
     TaskCompleteRequest,
     TaskNode,
 )
 from app.services import approval_policy, execution_service
 from app.services.approval_policy import body_fingerprint
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -271,10 +276,48 @@ async def decide_approval(
     if payload.approved:
         action = await db.get(AgentAction, approval.action_id)
         if action is not None and action.state == "queued":
-            await executor.run_action(db, action, user_id=user.id)
+            try:
+                await executor.run_action(db, action, user_id=user.id)
+            except executor.AgentsPaused:
+                # The approval stands; the action simply waits for the brake to come
+                # off. Losing the decision would make the user approve it twice.
+                logger.info("Action %s approved but agents are paused.", action.id)
     await db.commit()
     await db.refresh(approval)
     return ApprovalOut.model_validate(approval)
+
+
+@router.post("/strategies/{strategy_id}/pause", response_model=StrategyAgentState)
+async def set_agent_pause(
+    strategy_id: int,
+    payload: AgentPauseRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> StrategyAgentState:
+    """Stop or restart every agent on this strategy.
+
+    Deliberately one switch rather than per-agent: when something is going wrong the
+    user needs everything to stop, not to work out which agent to chase.
+    """
+    strategy = await _get_strategy(db, strategy_id)
+    strategy.agents_paused = payload.paused
+    strategy.agents_paused_reason = payload.reason if payload.paused else None
+    await execution_service.record_audit(
+        db,
+        strategy_id=strategy.id,
+        actor_type="human",
+        actor_id=user.id,
+        action="agents.paused" if payload.paused else "agents.resumed",
+        entity_type="strategy",
+        entity_id=strategy.id,
+        after={"reason": payload.reason} if payload.paused else None,
+    )
+    await db.commit()
+    return StrategyAgentState(
+        strategy_id=strategy.id,
+        agents_paused=strategy.agents_paused,
+        reason=strategy.agents_paused_reason,
+    )
 
 
 @router.post("/strategies/{strategy_id}/plan", response_model=PlanRunOut)
@@ -311,9 +354,12 @@ async def run_executor(
     that returns only ``awaiting_approval`` outcomes is working as intended, not failing.
     """
     strategy = await _get_strategy(db, strategy_id)
-    report = await executor.execute(
-        db, strategy, user_id=user.id, limit=max(1, min(limit, 50))
-    )
+    try:
+        report = await executor.execute(
+            db, strategy, user_id=user.id, limit=max(1, min(limit, 50))
+        )
+    except executor.AgentsPaused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     await db.commit()
     run = await db.get(AgentRun, report.run_id)
     return ExecutionRunOut(
