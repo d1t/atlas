@@ -285,7 +285,11 @@ class SupplyAgent(PillarAgent):
                     title=f"Send RFQ to {lead.name}",
                     pillar=self.pillar,
                     kind="task",
-                    capability="draft_email",
+                    # The task is to send it, not to write it. An RFQ asks for a price,
+                    # so the policy will route it through approval regardless — but
+                    # approving then dispatches, rather than leaving a human to
+                    # re-send the message by hand.
+                    capability="send_email",
                     agent_key=self.key,
                     supplier_lead_id=lead.id,
                     opportunity_id=lead.opportunity_id,

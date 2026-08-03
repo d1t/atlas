@@ -154,7 +154,45 @@ async def main() -> None:
         print(f"POST complete -> {r.status_code}")
         print(" ", r.json()["detail"])
 
-        rule("5. What the approval policy says about a draft")
+        rule("5. Executing the plan — the agent acts, and is stopped where it must be")
+        run = (
+            await c.post(f"/api/v1/execution/strategies/{sid}/execute", headers=h)
+        ).json()
+        print(f"  {run['run']['summary']}")
+        for o in run["outcomes"]:
+            print(f"  [{o['state']:18}] {o['capability']}")
+            if o["detail"]:
+                print(f"      {o['detail']}")
+        print("\n  Nothing was sent. Each outbound message is now sitting in the")
+        print("  approval queue with the exact words that would go out:")
+        queue = (
+            await c.get(f"/api/v1/execution/strategies/{sid}/approvals", headers=h)
+        ).json()
+        for item in queue:
+            a, act = item["approval"], item["action"]
+            print(f"  #{a['id']} [{a['risk']}] {item['task_title']}")
+            print(f"      to: {act['payload'].get('to_email')}")
+            print(f"      subject: {act['payload'].get('subject')}")
+
+        if queue:
+            print("\n  Approving one dispatches it and parks the action awaiting a")
+            print("  reply — sending is not the same as succeeding:")
+            aid = queue[0]["approval"]["id"]
+            await c.post(
+                f"/api/v1/execution/approvals/{aid}/decide",
+                headers=h,
+                json={"approved": True},
+            )
+            act = (
+                await c.get(
+                    f"/api/v1/execution/strategies/{sid}/actions", headers=h
+                )
+            ).json()
+            for a in act:
+                if a["id"] == queue[0]["action"]["id"]:
+                    print(f"      action -> {a['state']}")
+
+        rule("6. What the approval policy says about a draft")
         for label, payload in (
             (
                 "first approach, quotes a price",
@@ -188,7 +226,7 @@ async def main() -> None:
             print(f"  approval required: {d['requires_approval']} ({d['risk']})")
             print(f"  {d['reason']}")
 
-        rule("6. Same chase-up once the user grants a standing authorisation")
+        rule("7. Same chase-up once the user grants a standing authorisation")
         grant = (
             await c.post(
                 f"/api/v1/execution/strategies/{sid}/grants",
@@ -235,7 +273,7 @@ async def main() -> None:
         print(f"  approval required: {d['requires_approval']} ({d['risk']})")
         print(f"  {d['reason']}")
 
-        rule("7. Pausing the grant stops it immediately")
+        rule("8. Pausing the grant stops it immediately")
         await c.post(
             f"/api/v1/execution/grants/{grant['id']}/pause",
             headers=h,
@@ -256,7 +294,7 @@ async def main() -> None:
         ).json()
         print(f"  approval required: {d['requires_approval']} — {d['reason']}")
 
-        rule("8. Audit trail")
+        rule("9. Audit trail")
         for entry in (
             await c.get(f"/api/v1/execution/strategies/{sid}/audit", headers=h)
         ).json()[:8]:

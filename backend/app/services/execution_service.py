@@ -344,7 +344,9 @@ async def complete_task(
     db: AsyncSession,
     task: StrategyTask,
     *,
-    user: User,
+    user: User | None = None,
+    actor_type: str = "human",
+    actor_label: str | None = None,
     override_reason: str | None = None,
 ) -> StrategyTask:
     """Complete a task, enforcing its evidence requirement.
@@ -352,7 +354,15 @@ async def complete_task(
     Raises :class:`EvidenceRequired` when the task is gated, has no evidence, and no
     override reason was supplied. The override is deliberately not silent: it is stored
     on the task and written to the audit log.
+
+    An agent may complete a task it has genuinely evidenced, but it may not override the
+    gate and it never counts as verification — ``verified_by_id`` stays empty so the
+    record cannot imply a human checked the work.
     """
+    if actor_type != "human" and override_reason:
+        raise EvidenceRequired(
+            "Only a person may complete an evidence-gated task without evidence."
+        )
     if task.requires_evidence:
         count = await evidence_count(db, task.id)
         if count == 0:
@@ -366,14 +376,16 @@ async def complete_task(
     previous = task.status
     task.status = "done"
     task.completed_at = datetime.now(UTC)
-    task.verified_by_id = user.id
-    task.verified_at = task.completed_at
+    if actor_type == "human" and user is not None:
+        task.verified_by_id = user.id
+        task.verified_at = task.completed_at
 
     await record_audit(
         db,
         strategy_id=task.strategy_id,
-        actor_type="human",
-        actor_id=user.id,
+        actor_type=actor_type,
+        actor_id=user.id if user is not None else None,
+        actor_label=actor_label,
         action="task.completed",
         entity_type="strategy_task",
         entity_id=task.id,

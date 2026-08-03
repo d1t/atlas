@@ -139,6 +139,7 @@ async def _persist(
             assignee=spec.assignee,
             agent_key=spec.agent_key,
             confidence=spec.confidence,
+            capability=spec.capability,
             acceptance_criteria=spec.acceptance_criteria,
             requires_evidence=spec.requires_evidence,
             opportunity_id=spec.opportunity_id,
