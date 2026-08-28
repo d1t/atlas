@@ -8,6 +8,7 @@ import {
   api,
   BuyerLead,
   BuyerLeadInput,
+  CuratedCounterparty,
   HealthScore,
   MatchPair,
   MatchingResult,
@@ -155,6 +156,7 @@ export default function OpportunityWorkspacePage() {
         <SupplierPanel
           opportunityId={id}
           supplierLeads={suppliers}
+          opportunityCommodity={opp.commodity}
           onChange={load}
           onAdd={() => setAddingSupplier(true)}
         />
@@ -404,11 +406,13 @@ const SUP_STATUSES = [
 function SupplierPanel({
   opportunityId,
   supplierLeads,
+  opportunityCommodity,
   onChange,
   onAdd,
 }: {
   opportunityId: number;
   supplierLeads: SupplierLead[];
+  opportunityCommodity?: string | null;
   onChange: () => void;
   onAdd: () => void;
 }) {
@@ -422,6 +426,12 @@ function SupplierPanel({
           + Add supplier
         </button>
       </div>
+      <CuratedSuppliersPanel
+        opportunityId={opportunityId}
+        opportunityCommodity={opportunityCommodity}
+        supplierLeads={supplierLeads}
+        onChange={onChange}
+      />
       <table className="w-full text-xs">
         <thead className="text-left text-gray-500">
           <tr>
@@ -453,6 +463,165 @@ function SupplierPanel({
           )}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function CuratedSuppliersPanel({
+  opportunityId,
+  opportunityCommodity,
+  supplierLeads,
+  onChange,
+}: {
+  opportunityId: number;
+  opportunityCommodity?: string | null;
+  supplierLeads: SupplierLead[];
+  onChange: () => void;
+}) {
+  const [entries, setEntries] = useState<CuratedCounterparty[] | null>(null);
+  const [open, setOpen] = useState(false);
+  const [seedingAll, setSeedingAll] = useState(false);
+  const [seedingName, setSeedingName] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!opportunityCommodity) {
+      setEntries([]);
+      return;
+    }
+    (async () => {
+      try {
+        const list = await api.listCuratedSuppliers(opportunityId);
+        if (!cancelled) setEntries(list);
+      } catch (e) {
+        if (!cancelled)
+          setError(
+            e instanceof Error ? e.message : "Failed to load curated list",
+          );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Re-fetch whenever the supplier-lead set changes so the "already added"
+    // flag stays in sync after the user adds a curated entry from elsewhere.
+  }, [opportunityId, opportunityCommodity, supplierLeads.length]);
+
+  if (!entries || entries.length === 0) return null;
+
+  const remaining = entries.filter((e) => !e.already_added);
+
+  async function seedAll() {
+    setSeedingAll(true);
+    setError(null);
+    try {
+      await api.seedCuratedSuppliers(opportunityId, []);
+      onChange();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to seed");
+    } finally {
+      setSeedingAll(false);
+    }
+  }
+
+  async function seedOne(name: string) {
+    setSeedingName(name);
+    setError(null);
+    try {
+      await api.seedCuratedSuppliers(opportunityId, [name]);
+      onChange();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to seed");
+    } finally {
+      setSeedingName(null);
+    }
+  }
+
+  return (
+    <div className="mb-3 rounded-md border border-emerald-500/20 bg-emerald-500/5 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="text-xs">
+          <div className="font-medium text-emerald-300">
+            Curated counterparties · vetted for {entries[0].commodity}
+          </div>
+          <div className="mt-0.5 text-gray-400">
+            {entries.length} pre-vetted desk{entries.length === 1 ? "" : "s"} for
+            this lane.
+            {remaining.length === 0
+              ? " All already added."
+              : ` ${remaining.length} not yet attached.`}
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            className="btn-ghost text-xs"
+            onClick={() => setOpen((v) => !v)}
+          >
+            {open ? "hide" : "show"}
+          </button>
+          {remaining.length > 0 && (
+            <button
+              type="button"
+              className="rounded-md bg-emerald-600 px-2 py-1 text-xs font-medium text-black hover:bg-emerald-500 disabled:opacity-50"
+              onClick={seedAll}
+              disabled={seedingAll}
+            >
+              {seedingAll
+                ? "Adding…"
+                : `+ Add all curated (${remaining.length})`}
+            </button>
+          )}
+        </div>
+      </div>
+      {error && (
+        <div className="mt-2 text-xs text-red-300">{error}</div>
+      )}
+      {open && (
+        <ul className="mt-3 space-y-2">
+          {entries.map((cp) => (
+            <li
+              key={cp.name}
+              className="flex items-start justify-between gap-3 rounded-md bg-black/20 p-2"
+            >
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="font-medium text-gray-100">{cp.name}</span>
+                  <span className="text-[10px] text-gray-500">
+                    {cp.country} · {cp.type}
+                  </span>
+                </div>
+                <div className="mt-0.5 text-[11px] text-gray-400">
+                  {cp.description}
+                </div>
+                <a
+                  href={cp.website}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-0.5 inline-block text-[11px] text-accent hover:underline"
+                >
+                  {cp.website.replace(/^https?:\/\//, "")}
+                </a>
+              </div>
+              <div className="shrink-0">
+                {cp.already_added ? (
+                  <span className="text-[11px] text-gray-500">added</span>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn-ghost text-[11px]"
+                    onClick={() => seedOne(cp.name)}
+                    disabled={seedingName === cp.name}
+                  >
+                    {seedingName === cp.name ? "adding…" : "add"}
+                  </button>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

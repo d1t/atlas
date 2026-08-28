@@ -333,6 +333,15 @@ export const api = {
       `/api/v1/opportunities/${opportunityId}/supplier-leads/${leadId}`,
       { method: "DELETE" },
     ),
+  listCuratedSuppliers: (opportunityId: number) =>
+    request<CuratedCounterparty[]>(
+      `/api/v1/opportunities/${opportunityId}/curated-suppliers`,
+    ),
+  seedCuratedSuppliers: (opportunityId: number, names: string[] = []) =>
+    request<SupplierLead[]>(
+      `/api/v1/opportunities/${opportunityId}/curated-suppliers/seed`,
+      { method: "POST", json: { names } },
+    ),
   createBuyerLead: (opportunityId: number, payload: BuyerLeadInput) =>
     request<BuyerLead>(`/api/v1/opportunities/${opportunityId}/buyer-leads`, {
       method: "POST",
@@ -522,6 +531,16 @@ export type SupplierLeadInput = {
   negotiation_stage?: number;
   intel?: Record<string, unknown>;
   disclosed?: Record<string, unknown>;
+};
+
+export type CuratedCounterparty = {
+  name: string;
+  country: string;
+  commodity: string;
+  website: string;
+  type: string;
+  description: string;
+  already_added: boolean;
 };
 
 export type SupplierLead = Required<
